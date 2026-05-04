@@ -50,6 +50,8 @@
     <div>
       <button id="seed">Seed OPFS</button>
       <button id="grow">Add 5 MB random blob</button>
+      <button id="seed-multipart">Seed multipart bw-chat.db</button>
+      <button id="seed-stale-bare">Add stranded legacy bare file</button>
       <button id="lock">Lock /db/lockable.bin</button>
       <button id="unlock" disabled>Unlock</button>
       <button id="wipe">Wipe OPFS</button>
@@ -67,6 +69,8 @@
       <li><code>/db/lockable.bin</code> — locked on demand to test the lock badge</li>
       <li><code>/nested/deep/path/leaf.log</code> — to test tree depth and breadcrumbs</li>
       <li><code>/large.bin</code> — 5 MB random binary (only when you click "Add 5 MB blob")</li>
+      <li><code>/bw-chat.db.000</code>, <code>.001</code>, <code>.002</code> — real rsqlite-wasm DB split into 3 shards (chat-shaped schema)</li>
+      <li><code>/bw-chat.db</code> — extra "stranded legacy" bare file (when you click "Add stranded legacy bare file")</li>
     </ul>
 
     <script type="module">
@@ -212,6 +216,94 @@
         lockBtn.disabled = false;
         unlockBtn.disabled = true;
         say('Released lock', 'ok');
+      });
+
+      // Build a real rsqlite-wasm in-memory DB with chat-shaped schema, then split
+      // its serialized bytes across 3 multipart shards using rsqlite-wasm's pure-multiplex
+      // naming (bw-chat.db.000, .001, .002).
+      document.getElementById('seed-multipart').addEventListener('click', async () => {
+        try {
+          say('Loading rsqlite-wasm…');
+          const mod = await import('/rsqlite-wasm/rsqlite_wasm.js');
+          await mod.default();
+          const db = mod.WasmDatabase.openInMemory();
+          db.exec(`
+            CREATE TABLE conversations (
+              id INTEGER PRIMARY KEY,
+              title TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE messages (
+              id INTEGER PRIMARY KEY,
+              conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+              role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX idx_messages_conv ON messages(conversation_id);
+            CREATE TABLE attachments (
+              id INTEGER PRIMARY KEY,
+              message_id INTEGER NOT NULL REFERENCES messages(id),
+              kind TEXT NOT NULL,
+              size_bytes INTEGER NOT NULL
+            );
+          `);
+          // Insert demo data
+          for (let i = 1; i <= 12; i++) {
+            db.execParams('INSERT INTO conversations(title) VALUES(?)', [`Chat #${i}`]);
+          }
+          for (let conv = 1; conv <= 12; conv++) {
+            for (let m = 0; m < 30; m++) {
+              const role = m % 2 === 0 ? 'user' : 'assistant';
+              const text = role === 'user'
+                ? `Question ${m + 1} for chat ${conv}: lorem ipsum dolor sit amet, consectetur.`
+                : `Answer ${m + 1}: this is a deterministic-looking reply with some payload bytes attached.`;
+              db.execParams(
+                'INSERT INTO messages(conversation_id, role, content) VALUES(?,?,?)',
+                [conv, role, text],
+              );
+            }
+          }
+          db.execParams('INSERT INTO attachments(message_id, kind, size_bytes) VALUES(?,?,?)', [1, 'image/png', 4096]);
+          db.execParams('INSERT INTO attachments(message_id, kind, size_bytes) VALUES(?,?,?)', [3, 'text/plain', 1024]);
+          const buf = db.toBuffer();
+          db.close();
+
+          // Split into 3 shards. Use 1/3 of the buffer rounded up so we always end up with 3.
+          const total = buf.length;
+          const shardSize = Math.ceil(total / 3);
+          const root = await getRoot();
+          // Wipe any previous bw-chat.db artifacts
+          for await (const [name] of root.entries()) {
+            if (name === 'bw-chat.db' || /^bw-chat\.db\.\d{3}$/.test(name)) {
+              await root.removeEntry(name).catch(() => {});
+            }
+          }
+          let cursor = 0;
+          let i = 0;
+          while (cursor < total) {
+            const end = Math.min(cursor + shardSize, total);
+            const slice = buf.subarray(cursor, end);
+            const suffix = String(i).padStart(3, '0');
+            await writeFile(`/bw-chat.db.${suffix}`, slice);
+            cursor = end;
+            i++;
+          }
+          say(`Wrote ${i} shards (${total.toLocaleString()} bytes total)`, 'ok');
+        } catch (e) {
+          say('Failed: ' + (e?.message || String(e)), 'err');
+        }
+      });
+
+      document.getElementById('seed-stale-bare').addEventListener('click', async () => {
+        try {
+          // Drops a bare bw-chat.db file alongside the multipart shards to simulate
+          // the stranded-legacy condition the user analyzed.
+          await writeFile('/bw-chat.db', enc.encode('STALE LEGACY LEFTOVER — safe to delete\n'));
+          say('Added stale /bw-chat.db (multipart .000+ takes precedence)', 'ok');
+        } catch (e) {
+          say('Failed: ' + (e?.message || String(e)), 'err');
+        }
       });
 
       document.getElementById('wipe').addEventListener('click', async () => {

@@ -5,18 +5,20 @@ it covers everything that doesn't require a live DevTools panel + a human's eyes
 
 ## What's already automated (don't bother manually)
 
-- **42 unit tests** (`pnpm test:unit`) — magic-byte sniffing, hexdump rows, formatBytes,
-  base64 round-trip, all Zustand store reducers (tabs, selection, view mode, dirty
-  tracking, palette/sheet flags).
-- **20 bridge integration tests** (`pnpm test:bridge`) — runs the real bridge installer
+- **63 unit tests** (`pnpm test:unit`) — magic-byte sniffing (incl. UTF-8 BOM), hexdump
+  rows, formatBytes, base64 round-trip, all Zustand store reducers, **multipart group
+  resolution** (pure, legacy, single, bareLeftover edge cases), CSV/JSON/SQL-INSERT export
+  serialization (escaping, NULL, BLOB hex literals).
+- **23 bridge integration tests** (`pnpm test:bridge`) — runs the real bridge installer
   in headless Chromium against a live OPFS root. Covers: every RPC op (`list/read/write/
   mkdir/rm/move/quota/stat/mtimes/tree`), chunked binary integrity for >4 MB payloads
   (verified via SHA-256), append mode, Unicode paths, NotFound surfacing, refusal to
-  remove root, idempotent reinstallation, and **lock detection via real
-  SyncAccessHandle** held by a worker.
-- **18 dist validators** (`pnpm validate:dist`) — manifest is MV3, has `devtools_page`,
+  remove root, idempotent reinstallation, **lock detection via real SyncAccessHandle**
+  held by a worker, and **multipart shard write/read/reshard/lock** round-trips.
+- **20 dist validators** (`pnpm validate:dist`) — manifest is MV3, has `devtools_page`,
   has zero broad permissions, every icon resolves, every HTML asset reference resolves,
-  the panel chunk inlines the bridge installer.
+  the panel chunk inlines the bridge installer, and the rsqlite-wasm JS glue + .wasm
+  binary are both copied alongside each other (so SqliteViewer can boot).
 
 If `pnpm test` is green, the bridge, the RPC, the data path, and the manifest are all
 verified. The list below is **only** what those automated tests genuinely can't reach.
@@ -55,9 +57,42 @@ open DevTools → OPFS panel.
 - [ ] **D.4** `image.png` renders as image, footer shows `image/png · 64 × 64 · <size>`.
 - [ ] **D.5** Drop a `.mp3`/`.mp4` onto the tree → opens with `<audio>`/`<video>` controls and plays.
 - [ ] **D.6** Drop a `.pdf` → "Rendering PDF…" then page canvases stack.
-- [ ] **D.7** Drop a real `.sqlite` (eg. `sqlite3 t.db 'CREATE TABLE u(id,name); INSERT u VALUES(1,"a");'`) → SQLite viewer shows tables left, rows right; pagination controls work; ad-hoc SELECT runs.
 - [ ] **D.8** Open `large.bin` after clicking **Add 5 MB blob** → hex+ASCII view scrolls smoothly to the end.
 - [ ] **D.9** On a text file, the viewer header **text/hex** toggle switches views.
+
+### D′. SQLite client (single-file)
+
+- [ ] **D′.1** Drop a real `.sqlite` onto the tree (eg. `sqlite3 t.db 'CREATE TABLE u(id INTEGER PRIMARY KEY,name TEXT); INSERT u VALUES(1,"Alice"),(2,"Bob");'`).
+- [ ] **D′.2** Open it → 3-pane viewer: schema tree on the left, data grid on the right, SQL console at the bottom.
+- [ ] **D′.3** SchemaTree expands `u` → shows columns with type badges, PK key icon on `id`.
+- [ ] **D′.4** DataGrid renders rows; click a column header to sort; type in the per-column filter to narrow.
+- [ ] **D′.5** Double-click a non-PK cell → input appears → edit → blur commits an UPDATE; "unsaved changes" badge appears.
+- [ ] **D′.6** Click **Save** in the header → toast confirms; reopen the file (refresh) → edit persisted.
+- [ ] **D′.7** Run `SELECT * FROM u WHERE name LIKE 'A%'` in the console → press ⌘⏎ → result tab appears with rows.
+- [ ] **D′.8** Click **EXPLAIN** with the same query → EXPLAIN QUERY PLAN tree renders.
+- [ ] **D′.9** Console **History** dropdown shows your previous queries; selecting one re-fills the editor.
+- [ ] **D′.10** **Save** a named query; reload the panel; reopen the same DB → saved query is still in the dropdown.
+- [ ] **D′.11** Result tab toolbar **Export ▼** → CSV / JSON / SQL INSERTs all download with correct escaping.
+- [ ] **D′.12** Header **Download as .sqlite** writes a standard single-file SQLite that opens in `sqlite3` CLI.
+
+### D″. SQLite client (multipart, the real reason)
+
+Use the fixture's **Seed multipart bw-chat.db** button, then in DevTools open the OPFS panel.
+
+- [ ] **D″.1** Tree shows `bw-chat.db.000`, `.001`, `.002` each with a database icon and a blue **×3** badge. Hover any → tooltip shows `Multipart group: 3 shards · <size>`.
+- [ ] **D″.2** Click **any** shard → opens **one** SQLite tab; viewer header reads `bw-chat.db · multipart · 3 shards · <size>`.
+- [ ] **D″.3** SchemaTree shows `conversations`, `messages`, `attachments`, the `idx_messages_conv` index. PRAGMA pane shows `page_size`, `page_count`, etc.
+- [ ] **D″.4** Open the `messages` table; cells in the `conversation_id` column render as purple FK chips → clicking one jumps to the matching `conversations` row in a new inner tab.
+- [ ] **D″.5** Run `SELECT conversation_id, COUNT(*) AS n FROM messages GROUP BY 1 ORDER BY 2 DESC` → results render with `n` sorted descending.
+- [ ] **D″.6** Edit a `messages.content` cell → Save → toast says `Saved · 3 shards`. Reload the panel → edit still present and the shard sizes still total to the new DB size.
+- [ ] **D″.7** Click **Add stranded legacy bare file** in the fixture → refresh tree → a `bw-chat.db` (no suffix) appears with an amber **stale** badge. Clicking the file opens the SQLite viewer; header shows a "Stranded `bw-chat.db`" warning button → click it → confirms removal → tree refreshes without the stale file.
+- [ ] **D″.8** Right-click any shard → **Download joined (3 shards)** → bytes land in Downloads as `bw-chat.db`. Verify with `sqlite3 ~/Downloads/bw-chat.db .tables`.
+
+### D‴. Multipart upload (segmented)
+
+- [ ] **D‴.1** Click the toolbar **Split** icon (next to Upload) → pick any large file (e.g. a `.zip` you have lying around).
+- [ ] **D‴.2** Pick chunk size at the prompt (default 1024 MB; type a smaller number like `1` to force multiple shards on a small file).
+- [ ] **D‴.3** Tree shows `<base>.000`, `.001`, … with the **×N** badge. **Download joined** reproduces the original file byte-for-byte (`sha256sum` to verify).
 
 ### E. Editor save flow (the part the bridge tests can't see)
 

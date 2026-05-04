@@ -1,18 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-import { readFile, writeFile } from '../../bridge/rpc';
+import { call, readFile, writeFile } from '../../bridge/rpc';
 import { useStore } from '../../state/store';
 import { detect } from '../../lib/sniff';
+import { detectGroupsInDir, resolveGroup, type MultipartGroup } from '../../lib/multipart';
+import { dirname } from '../../lib/sniff';
+import type { FsEntry } from '../../bridge/types';
 import { TextEditor } from './TextEditor';
 import { JsonViewer } from './JsonViewer';
 import { ImageViewer } from './ImageViewer';
 import { MediaViewer } from './MediaViewer';
 import { HexViewer } from './HexViewer';
 import { PdfViewer } from './PdfViewer';
-import { SqliteViewer } from './SqliteViewer';
+import { SqliteViewer } from './sqlite/SqliteViewer';
 import { Button } from '../ui/button';
 
 type ViewMode = 'auto' | 'text' | 'hex';
+
+type Mode =
+  | { kind: 'loading' }
+  | { kind: 'multipart-sqlite'; group: MultipartGroup }
+  | { kind: 'plain' }
+  | { kind: 'error'; message: string };
 
 export function ViewerHost({ path }: { path: string }) {
   const tab = useStore((s) => s.tabs.find((t) => t.path === path));
@@ -20,15 +29,45 @@ export function ViewerHost({ path }: { path: string }) {
   const reloadAncestor = useStore((s) => s.reloadAncestor);
   const refreshQuota = useStore((s) => s.refreshQuota);
 
+  const [mode, setMode] = useState<Mode>({ kind: 'loading' });
   const [bytes, setBytes] = useState<Uint8Array | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ read: number; total: number } | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('auto');
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Step 1: list parent dir, decide if this is part of a multipart group
   useEffect(() => {
     let cancelled = false;
-    setError(null);
+    setMode({ kind: 'loading' });
+    setBytes(null);
+    setProgress(null);
+    (async () => {
+      try {
+        const dir = dirname(path);
+        const siblings = await call('list', { path: dir });
+        if (cancelled) return;
+        const groups = detectGroupsInDir(dir, siblings);
+        // Find the group this path belongs to (by name match in any group's shards or bareLeftover)
+        const inGroup = findGroupContaining(groups, path);
+        if (inGroup) {
+          setMode({ kind: 'multipart-sqlite', group: inGroup });
+          return;
+        }
+        // Not multipart — fall through to byte-read + sniff
+        setMode({ kind: 'plain' });
+      } catch (e) {
+        if (!cancelled) setMode({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [path, reloadKey]);
+
+  // Step 2 (only when plain): read the bytes and sniff
+  useEffect(() => {
+    if (mode.kind !== 'plain') return;
+    let cancelled = false;
     setBytes(null);
     setProgress(null);
     (async () => {
@@ -38,15 +77,31 @@ export function ViewerHost({ path }: { path: string }) {
         });
         if (!cancelled) setBytes(data);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setMode({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [path, reloadKey]);
+  }, [mode.kind, path, reloadKey]);
 
   const detection = useMemo(() => (bytes ? detect(path, bytes) : null), [bytes, path]);
+
+  // Single-file SQLite: synthesize a single-shard group and hand to SqliteViewer
+  const singleSqliteGroup = useMemo<MultipartGroup | null>(() => {
+    if (!detection || detection.kind !== 'sqlite') return null;
+    const dir = dirname(path);
+    const name = path.slice(dir === '/' ? 1 : dir.length + 1);
+    const entry: FsEntry = {
+      name,
+      path,
+      kind: 'file',
+      size: bytes?.length ?? 0,
+      lastModified: 0,
+      locked: false,
+    };
+    return resolveGroup(path, [entry]);
+  }, [detection, path, bytes]);
 
   const onSave = async () => {
     if (!tab?.scratch) return;
@@ -57,12 +112,21 @@ export function ViewerHost({ path }: { path: string }) {
       await refreshQuota();
       setReloadKey((k) => k + 1);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setMode({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
     }
   };
 
   useEffect(() => {
     const handler = async (ev: KeyboardEvent) => {
+      // Don't intercept if focus is inside CodeMirror or an input — its own keymap handles save
+      if (
+        ev.target instanceof HTMLElement &&
+        (ev.target.closest('.cm-editor') ||
+          ev.target.tagName === 'INPUT' ||
+          ev.target.tagName === 'TEXTAREA')
+      ) {
+        return;
+      }
       if ((ev.metaKey || ev.ctrlKey) && ev.key === 's') {
         ev.preventDefault();
         if (tab?.dirty) await onSave();
@@ -72,11 +136,11 @@ export function ViewerHost({ path }: { path: string }) {
     return () => window.removeEventListener('keydown', handler);
   });
 
-  if (error) {
+  if (mode.kind === 'error') {
     return (
       <div className="p-6 text-sm">
         <p className="text-destructive font-medium mb-1">Couldn't read file</p>
-        <p className="text-muted-foreground text-xs mb-3">{error}</p>
+        <p className="text-muted-foreground text-xs mb-3">{mode.message}</p>
         <Button size="sm" variant="outline" onClick={() => setReloadKey((k) => k + 1)}>
           Retry
         </Button>
@@ -84,6 +148,20 @@ export function ViewerHost({ path }: { path: string }) {
     );
   }
 
+  if (mode.kind === 'loading') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground p-6">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Resolving…
+      </div>
+    );
+  }
+
+  if (mode.kind === 'multipart-sqlite') {
+    return <SqliteViewer group={mode.group} key={mode.group.id + reloadKey} />;
+  }
+
+  // plain mode below — need bytes + detection
   if (!bytes || !detection) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground p-6">
@@ -94,6 +172,11 @@ export function ViewerHost({ path }: { path: string }) {
           : '…'}
       </div>
     );
+  }
+
+  // Single-file SQLite picked up via magic bytes goes through the same viewer
+  if (detection.kind === 'sqlite' && singleSqliteGroup) {
+    return <SqliteViewer group={singleSqliteGroup} key={path + reloadKey} />;
   }
 
   const renderAuto = () => {
@@ -110,8 +193,6 @@ export function ViewerHost({ path }: { path: string }) {
         return <MediaViewer bytes={bytes} mime={detection.mime} kind="video" />;
       case 'pdf':
         return <PdfViewer bytes={bytes} />;
-      case 'sqlite':
-        return <SqliteViewer bytes={bytes} />;
       case 'binary':
       case 'zip':
       case 'gzip':
@@ -154,7 +235,7 @@ export function ViewerHost({ path }: { path: string }) {
             </button>
           </>
         )}
-        {!isTextual && detection.kind !== 'sqlite' && detection.kind !== 'pdf' && (
+        {!isTextual && detection.kind !== 'pdf' && (
           <span className="text-muted-foreground/60">hex</span>
         )}
         {tab?.dirty && (
@@ -168,4 +249,15 @@ export function ViewerHost({ path }: { path: string }) {
       </div>
     </div>
   );
+}
+
+function findGroupContaining(
+  groups: Map<string, MultipartGroup>,
+  path: string,
+): MultipartGroup | null {
+  for (const g of groups.values()) {
+    if (g.shards.some((s) => s.path === path)) return g;
+    if (g.bareLeftover?.path === path) return g;
+  }
+  return null;
 }

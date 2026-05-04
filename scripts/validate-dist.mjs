@@ -72,6 +72,13 @@ for (const f of ['index.html', 'panel.html']) {
   else err(`${f} missing`);
 }
 
+// rsqlite-wasm artifacts (JS glue + .wasm) must be alongside each other for the
+// glue's `new URL('rsqlite_wasm_bg.wasm', import.meta.url)` to resolve.
+for (const f of ['rsqlite-wasm/rsqlite_wasm.js', 'rsqlite-wasm/rsqlite_wasm_bg.wasm']) {
+  if (existsSync(path.join(DIST, f))) ok(`${f} exists`);
+  else err(`${f} missing — SQLite viewer will fail to boot`);
+}
+
 // Check that index.html and panel.html reference assets that exist
 async function checkHtmlReferences(htmlFile) {
   const html = await readFile(path.join(DIST, htmlFile), 'utf-8');

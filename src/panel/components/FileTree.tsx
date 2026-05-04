@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
+  Database,
   File,
   FileCode2,
   FileImage,
@@ -25,11 +26,14 @@ import {
 } from './ui/context-menu';
 import { downloadFile } from '../lib/zip';
 import { dirname } from '../lib/sniff';
+import { downloadJoined, parseShardName, type MultipartGroup } from '../lib/multipart';
+import { Badge } from './ui/badge';
+import { formatBytes } from '../lib/formatBytes';
 
 const ROOT = '/';
 const INDENT_PX = 14;
 
-function iconFor(entry: FsEntry, expanded: boolean) {
+function iconFor(entry: FsEntry, expanded: boolean, isMultipart: boolean) {
   if (entry.kind === 'directory') {
     return expanded ? (
       <FolderOpen className="h-3.5 w-3.5 text-amber-500/80" />
@@ -37,7 +41,12 @@ function iconFor(entry: FsEntry, expanded: boolean) {
       <Folder className="h-3.5 w-3.5 text-amber-500/80" />
     );
   }
+  if (isMultipart) {
+    return <Database className="h-3.5 w-3.5 text-sky-500/80" />;
+  }
   const ext = entry.name.slice(entry.name.lastIndexOf('.') + 1).toLowerCase();
+  if (['db', 'sqlite', 'sqlite3'].includes(ext))
+    return <Database className="h-3.5 w-3.5 text-sky-500/80" />;
   if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'avif', 'ico'].includes(ext))
     return <FileImage className="h-3.5 w-3.5 text-emerald-500/80" />;
   if (['json', 'json5'].includes(ext))
@@ -47,6 +56,21 @@ function iconFor(entry: FsEntry, expanded: boolean) {
   if (['md', 'txt', 'log'].includes(ext))
     return <FileText className="h-3.5 w-3.5 text-muted-foreground" />;
   return <File className="h-3.5 w-3.5 text-muted-foreground" />;
+}
+
+function multipartGroupForEntry(
+  entry: FsEntry,
+  groupsForDir: Map<string, MultipartGroup> | undefined,
+): { group: MultipartGroup; isBareLeftover: boolean } | null {
+  if (!groupsForDir) return null;
+  const parsed = parseShardName(entry.name);
+  const base = parsed ? parsed.base : entry.name;
+  const group = groupsForDir.get(base);
+  if (!group) return null;
+  const isShard = group.shards.some((s) => s.path === entry.path);
+  const isBare = group.bareLeftover?.path === entry.path;
+  if (!isShard && !isBare) return null;
+  return { group, isBareLeftover: isBare };
 }
 
 interface NodeRenderProps {
@@ -68,6 +92,10 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
   const closeTab = useStore((s) => s.closeTab);
   const treeMtimes = useStore((s) => s.treeMtimes);
   const flashed = flashedAt && Date.now() - flashedAt < 1500;
+  const groupsForDir = useStore((s) => s.multipartGroups.get(dirname(entry.path)));
+  const groupInfo = entry.kind === 'file' ? multipartGroupForEntry(entry, groupsForDir) : null;
+  const group = groupInfo?.group ?? null;
+  const isBare = groupInfo?.isBareLeftover ?? false;
 
   const handleClick = () => {
     select(entry.path);
@@ -177,8 +205,18 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
             ) : (
               <span className="w-3" />
             )}
-            {iconFor(entry, expanded)}
-            <span className="truncate text-xs">{entry.name}</span>
+            {iconFor(entry, expanded, !!group && !isBare)}
+            <span className={cn('truncate text-xs', isBare && 'text-amber-500')}>{entry.name}</span>
+            {group && !isBare && (
+              <Badge variant="default" className="ml-1" title={`Multipart group: ${group.shards.length} shards · ${formatBytes(group.totalSize)}`}>
+                ×{group.shards.length}
+              </Badge>
+            )}
+            {isBare && (
+              <Badge variant="destructive" className="ml-1" title="Stranded legacy file from a pre-pure-multiplex era">
+                stale
+              </Badge>
+            )}
             {entry.locked && (
               <Lock className="h-3 w-3 ml-1 text-amber-500" aria-label="Locked by page" />
             )}
@@ -193,6 +231,21 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
           {entry.kind === 'file' && (
             <>
               <ContextMenuItem onSelect={() => downloadFile(entry)}>Download</ContextMenuItem>
+              {group && !isBare && group.shards.length > 1 && (
+                <ContextMenuItem
+                  onSelect={async () => {
+                    try {
+                      toast.info(`Joining ${group.shards.length} shards…`);
+                      await downloadJoined(group);
+                      toast.success(`Downloaded ${group.base}`);
+                    } catch (e) {
+                      toast.error(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                >
+                  Download joined ({group.shards.length} shards)
+                </ContextMenuItem>
+              )}
               <ContextMenuItem onSelect={handleDuplicate}>Duplicate</ContextMenuItem>
               <ContextMenuSeparator />
             </>

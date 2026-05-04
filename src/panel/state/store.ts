@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { FsEntry, QuotaInfo } from '../bridge/types';
 import { call, getBridgeInfo, resetBridge, RpcError } from '../bridge/rpc';
 import { dirname } from '../lib/sniff';
+import { detectGroupsInDir, type MultipartGroup } from '../lib/multipart';
 
 type ViewMode = 'tree' | 'search' | 'stats';
 
@@ -37,6 +38,8 @@ interface State {
 
   quota: QuotaInfo | null;
   treeMtimes: Record<string, number>;
+  /** dir path → Map<base, MultipartGroup> for that dir's listing */
+  multipartGroups: Map<string, Map<string, MultipartGroup>>;
 
   viewMode: ViewMode;
   liveWatch: boolean;
@@ -81,6 +84,7 @@ export const useStore = create<State>((set, get) => ({
   activeTab: null,
   quota: null,
   treeMtimes: {},
+  multipartGroups: new Map(),
   viewMode: 'tree',
   liveWatch: false,
   paletteOpen: false,
@@ -101,7 +105,13 @@ export const useStore = create<State>((set, get) => ({
 
   async refreshAll() {
     resetBridge();
-    set({ nodes: new Map(), expanded: new Set([ROOT]), quota: null, treeMtimes: {} });
+    set({
+      nodes: new Map(),
+      expanded: new Set([ROOT]),
+      quota: null,
+      treeMtimes: {},
+      multipartGroups: new Map(),
+    });
     await get().init();
   },
 
@@ -188,7 +198,10 @@ export const useStore = create<State>((set, get) => ({
       const children = await call('list', { path });
       const next = new Map(get().nodes);
       next.set(path, { path, loading: false, loaded: true, children });
-      set({ nodes: next });
+      const groups = detectGroupsInDir(path, children);
+      const nextGroups = new Map(get().multipartGroups);
+      nextGroups.set(path, groups);
+      set({ nodes: next, multipartGroups: nextGroups });
     } catch (e) {
       const next = new Map(get().nodes);
       const message = e instanceof RpcError ? e.message : String(e);

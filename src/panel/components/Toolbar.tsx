@@ -7,6 +7,7 @@ import {
   Keyboard,
   RefreshCw,
   Search,
+  Split,
   TreePine,
   Upload,
   Download,
@@ -20,6 +21,7 @@ import { Separator } from './ui/separator';
 import { call, writeFile } from '../bridge/rpc';
 import { exportTreeAsZip } from '../lib/zip';
 import { dirname } from '../lib/sniff';
+import { uploadSegmented } from '../lib/multipart';
 
 export function Toolbar() {
   const refreshAll = useStore((s) => s.refreshAll);
@@ -35,6 +37,7 @@ export function Toolbar() {
   const expandDir = useStore((s) => s.expandDir);
   const refreshQuota = useStore((s) => s.refreshQuota);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const segmentedInputRef = useRef<HTMLInputElement>(null);
 
   const targetDir = (() => {
     if (!selected) return '/';
@@ -86,6 +89,35 @@ export function Toolbar() {
     await reloadDir(targetDir);
     await refreshQuota();
     if (count > 0) toast.success(`Uploaded ${count} file${count === 1 ? '' : 's'}`);
+  };
+
+  const handleUploadSegmented = async (file: File | null) => {
+    if (!file) return;
+    const presetMb = window.prompt(
+      `Split "${file.name}" (${(file.size / (1024 * 1024)).toFixed(1)} MB) into shards.\nChunk size in MB:\n  256  — 256 MB\n  1024 — 1 GB (rsqlite-wasm default)\n  Custom: type any number`,
+      '1024',
+    );
+    if (!presetMb) return;
+    const mb = Number.parseFloat(presetMb);
+    if (!Number.isFinite(mb) || mb <= 0) {
+      toast.error('Invalid chunk size');
+      return;
+    }
+    const chunkSize = Math.floor(mb * 1024 * 1024);
+    const baseInput = window.prompt(
+      'Base name for the multipart group (no .NNN suffix):',
+      file.name,
+    );
+    if (!baseInput) return;
+    try {
+      toast.info(`Uploading in ${Math.ceil(file.size / chunkSize)} shards…`);
+      const r = await uploadSegmented(targetDir, file, chunkSize, baseInput);
+      await reloadDir(targetDir);
+      await refreshQuota();
+      toast.success(`Uploaded ${r.base} as ${r.shardCount} shard${r.shardCount === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const handleExportZip = async () => {
@@ -206,6 +238,28 @@ export function Toolbar() {
         className="hidden"
         onChange={(e) => {
           handleUpload(e.target.files);
+          e.target.value = '';
+        }}
+      />
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => segmentedInputRef.current?.click()}
+            aria-label="Upload segmented"
+          >
+            <Split className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Upload segmented (split file into shards)</TooltipContent>
+      </Tooltip>
+      <input
+        ref={segmentedInputRef}
+        type="file"
+        className="hidden"
+        onChange={(e) => {
+          handleUploadSegmented(e.target.files?.[0] ?? null);
           e.target.value = '';
         }}
       />
