@@ -26,7 +26,15 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: pnpm test:unit
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - run: pnpm test:bridge
+
       - run: pnpm build
+
+      - run: pnpm validate:dist
 
       - name: Package extension
         run: |

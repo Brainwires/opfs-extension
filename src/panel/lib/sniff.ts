@@ -46,16 +46,16 @@ function hasUtf8Bom(bytes: Uint8Array): boolean {
 
 function looksLikeText(bytes: Uint8Array): boolean {
   const sample = bytes.subarray(0, Math.min(bytes.length, 4096));
-  let ascii = 0;
+  let printable = 0;
   let nonText = 0;
   for (let i = 0; i < sample.length; i++) {
     const b = sample[i];
     if (b === 0) return false;
-    if ((b >= 0x20 && b < 0x7f) || b === 0x09 || b === 0x0a || b === 0x0d) ascii++;
-    else if (b >= 0xc0) ascii++; // tolerate UTF-8 multi-byte starts
+    if ((b >= 0x20 && b < 0x7f) || b === 0x09 || b === 0x0a || b === 0x0d) printable++;
+    else if (b >= 0x80) printable++; // any high byte: assume part of a UTF-8 multi-byte sequence
     else nonText++;
   }
-  return sample.length > 0 && nonText / sample.length < 0.05 && ascii > 0;
+  return sample.length > 0 && nonText / sample.length < 0.05 && printable > 0;
 }
 
 function looksLikeJson(bytes: Uint8Array): boolean {

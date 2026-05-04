@@ -1,204 +1,148 @@
 # Manual QA checklist
 
-A walkthrough you can run end-to-end on a freshly loaded build. Roughly grouped from
-"nothing works" → "everything works"; each item is one concrete action.
+Most of the original 80-item checklist is now automated. Run `pnpm test` first —
+it covers everything that doesn't require a live DevTools panel + a human's eyes.
 
-## 0. Build & install
+## What's already automated (don't bother manually)
 
-- [ ] **0.1** `pnpm install && pnpm build` — completes with no TS errors.
-- [ ] **0.2** `chrome://extensions` → Developer mode → **Load unpacked** → pick `dist/`. Extension card shows "Brainwires OPFS" with the gradient folder icon and version 0.1.0.
-- [ ] **0.3** Open any normal http(s) page (eg. `https://example.com`) → DevTools (F12) → tabs at top show **OPFS** alongside Elements, Console, etc. Click it; the panel renders.
+- **42 unit tests** (`pnpm test:unit`) — magic-byte sniffing, hexdump rows, formatBytes,
+  base64 round-trip, all Zustand store reducers (tabs, selection, view mode, dirty
+  tracking, palette/sheet flags).
+- **20 bridge integration tests** (`pnpm test:bridge`) — runs the real bridge installer
+  in headless Chromium against a live OPFS root. Covers: every RPC op (`list/read/write/
+  mkdir/rm/move/quota/stat/mtimes/tree`), chunked binary integrity for >4 MB payloads
+  (verified via SHA-256), append mode, Unicode paths, NotFound surfacing, refusal to
+  remove root, idempotent reinstallation, and **lock detection via real
+  SyncAccessHandle** held by a worker.
+- **18 dist validators** (`pnpm validate:dist`) — manifest is MV3, has `devtools_page`,
+  has zero broad permissions, every icon resolves, every HTML asset reference resolves,
+  the panel chunk inlines the bridge installer.
 
-## 1. Empty / error states
-
-- [ ] **1.1** With DevTools open on `https://example.com` (no OPFS used), panel shows the **EmptyOpfsState** with the origin name and the upload hint.
-- [ ] **1.2** Open DevTools on a `chrome://newtab/` page → switch to OPFS panel → shows the **NoOpfsState** ("OPFS isn't reachable from this page").
-- [ ] **1.3** Without selecting anything, the right pane shows **NoSelectionState** with the ⌘P hint.
-- [ ] **1.4** With DevTools open, refresh the inspected page in the browser — the panel should refresh on its own (not need a manual click).
-
-## 2. Test fixture seeding
-
-Open `chrome-extension://<id>/test-fixture.html` in a normal tab. The id is shown on the
-extension card in `chrome://extensions`.
-
-- [ ] **2.1** Click **Seed OPFS** → log shows `Seeded ✓`.
-- [ ] **2.2** Open DevTools on the fixture tab → OPFS panel → tree shows `data/`, `db/`, `nested/`, `hello.txt`, `image.png`, `sample.json`.
-- [ ] **2.3** Quota bar at the bottom shows non-zero usage; origin in the status bar matches the fixture's `chrome-extension://<id>` host.
-
-## 3. File tree
-
-- [ ] **3.1** Click `data/` → expands; click again → collapses.
-- [ ] **3.2** Type `note` in the filter box → only `data/` (or its descendants) remain.
-- [ ] **3.3** Hover a file → file size appears at the right edge of the row.
-- [ ] **3.4** Click `nested/` → `deep/` → `path/` → eventually `leaf.log`. Tree handles depth correctly.
-
-## 4. Quick Open palette
-
-- [ ] **4.1** Press **⌘P** (Ctrl+P on Linux/Win) → palette dialog opens.
-- [ ] **4.2** Type `leaf` → `nested/deep/path/leaf.log` ranks first.
-- [ ] **4.3** Press Enter → palette closes, tab opens, breadcrumb shows full path.
-- [ ] **4.4** Reopen palette, type a directory name (e.g. `data`) → selecting it expands the directory in the tree (no tab opens).
-
-## 5. Tabs
-
-- [ ] **5.1** Open `hello.txt`, then `sample.json`, then `image.png` from the tree → three tabs.
-- [ ] **5.2** Click between tabs — viewer updates, breadcrumb updates.
-- [ ] **5.3** Hit **⌘W** with `image.png` active → tab closes, focus moves to last remaining tab.
-- [ ] **5.4** Click the × on a tab → closes that tab.
-
-## 6. Breadcrumb bar
-
-- [ ] **6.1** With a deep file open, breadcrumb shows each segment as a button.
-- [ ] **6.2** Click `/` (the leading slash) → input field appears with editable path.
-- [ ] **6.3** Type a different valid path and press Enter → navigates to that file.
-- [ ] **6.4** Click the **download** button on the breadcrumb → file downloads to your OS Downloads folder.
-
-## 7. Text editor (hello.txt)
-
-- [ ] **7.1** Open `hello.txt` → CodeMirror loads, content visible, line numbers on the left.
-- [ ] **7.2** Type something → tab badge shows a dirty dot, status bar shows `● modified`, "Save (⌘S)" button appears in viewer header.
-- [ ] **7.3** Press **⌘S** → toast or visible state change clears dirty marker, content persists. Refresh the panel (refresh icon in toolbar) → your edit is still there.
-- [ ] **7.4** Open `data/notes.md` → renders with markdown syntax highlighting.
-- [ ] **7.5** Open `data/config.toml` → renders as plain text (no TOML grammar bundled, that's expected).
-
-## 8. JSON viewer
-
-- [ ] **8.1** Open `sample.json` → content is pretty-printed (2-space indent), JSON syntax highlighting on.
-- [ ] **8.2** Edit a value → ⌘S saves. Reload the tab → edit persisted.
-
-## 9. Image viewer
-
-- [ ] **9.1** Open `image.png` → image renders centered, footer shows `image/png · 64 × 64 · <size>`.
-- [ ] **9.2** Drag-drop a `.jpg` from your desktop onto the root of the tree → uploads, then double-click to open → renders.
-
-## 10. Audio / video
-
-- [ ] **10.1** Drag any local `.mp3` onto the tree → uploads. Open it → audio player with controls. Press play.
-- [ ] **10.2** Drag any small `.mp4` onto the tree → uploads. Open → video player. Press play.
-
-## 11. PDF viewer
-
-- [ ] **11.1** Drag a `.pdf` onto the tree → uploads. Open it → "Rendering PDF…" briefly, then page canvases appear.
-- [ ] **11.2** Multi-page PDF renders all pages stacked vertically.
-
-## 12. SQLite viewer
-
-The fixture's `db/main.sqlite` is just the magic header — sql.js will fail to parse it
-gracefully. To test the real viewer you need a real SQLite file:
-
-- [ ] **12.1** On a machine with sqlite3, run `sqlite3 test.db 'CREATE TABLE users(id INT, name TEXT); INSERT INTO users VALUES (1, "Alice"), (2, "Bob");'` then drop `test.db` onto the OPFS tree.
-- [ ] **12.2** Open it → left sidebar lists `users`. Right side shows columns and rows.
-- [ ] **12.3** Pagination works (Prev/Next disabled at extremes; row counter updates).
-- [ ] **12.4** Type `SELECT name FROM users WHERE id=1` in the ad-hoc box → press Run (or ⌘Enter) → result table shows "Alice".
-- [ ] **12.5** Bonus: visit `https://sqlite.org/wasm/demo-123.html`, run any of their demos that write to OPFS → DevTools → OPFS panel → see their `sqlite.db` file → open it → real schema appears.
-
-## 13. Hex viewer
-
-- [ ] **13.1** Click **Add 5 MB random blob** in the fixture → `large.bin` appears in the tree (5.0 MB).
-- [ ] **13.2** Open `large.bin` → loading spinner with progress %, then hex view renders.
-- [ ] **13.3** Scroll the hex view — virtualized rows continue smoothly to the end (no lag, no blank patches).
-- [ ] **13.4** Open a text file → in the viewer header click **hex** → switches to hex view of the same bytes; click **text** → switches back.
-
-## 14. Create / rename / delete
-
-- [ ] **14.1** Toolbar **+ file** with `/` selected → prompt → enter `foo.txt` → file appears in root, opens automatically.
-- [ ] **14.2** Toolbar **+ folder** → prompt → enter `scratch` → directory appears, expanded.
-- [ ] **14.3** Right-click a file → **Rename** → change name → tree updates.
-- [ ] **14.4** Right-click a directory → **Rename** → recursive move works (children preserved).
-- [ ] **14.5** Right-click a file → **Delete** → confirm → file gone; quota updates.
-- [ ] **14.6** Right-click a directory with contents → **Delete** → recursive confirm → entire subtree gone.
-- [ ] **14.7** Select root and try Delete keyboard → blocked / no-op (we refuse to remove the OPFS root).
-
-## 15. Drag & drop
-
-- [ ] **15.1** Drag any OS file onto a specific directory in the tree → uploads into that directory.
-- [ ] **15.2** Drag multiple files at once → all upload, success toast counts them.
-- [ ] **15.3** Drag a file from the OPFS tree onto your desktop → file downloads (browser may show a "Save as" prompt depending on settings).
-
-## 16. Snapshot / restore zip
-
-- [ ] **16.1** Toolbar **Export OPFS as .zip** (download icon) → `.zip` lands in Downloads. Open it → contains the entire tree with correct paths.
-- [ ] **16.2** Click **Wipe OPFS** in the fixture → tree empties.
-- [ ] **16.3** Toolbar **Restore from .zip** (rotated upload icon) → pick the zip you just downloaded → tree repopulates with the original structure.
-
-## 17. Live watch
-
-- [ ] **17.1** Toggle **Live watch** in the toolbar (clock → activity icon).
-- [ ] **17.2** Switch to the fixture tab and click **Seed OPFS** again → within ~2s the OPFS panel's tree should refresh; modified entries flash blue briefly.
-- [ ] **17.3** Toggle live watch off → polling stops (you can verify by clicking Add 5 MB blob and confirming the panel does *not* auto-refresh).
-
-## 18. Lock detection
-
-- [ ] **18.1** In the fixture, click **Lock /db/lockable.bin** → log says `Locked`.
-- [ ] **18.2** In the OPFS panel, refresh → click `lockable.bin` to select → a lock icon should appear next to the name.
-- [ ] **18.3** Try to delete or rename it → toast error mentions the file is locked / `NoModificationAllowedError`. Tree state stays sane.
-- [ ] **18.4** Fixture **Unlock** → after the next tree refresh (live watch on, or hit refresh), lock badge clears.
-
-## 19. Stats treemap
-
-- [ ] **19.1** Toolbar storage icon (HardDrive) → switches to Stats view.
-- [ ] **19.2** Treemap renders, big rectangles for big files (`large.bin` should dominate).
-- [ ] **19.3** Hover any rectangle → header shows `path — size`.
-- [ ] **19.4** Click a rectangle → switches back to Tree view, selects that file (and opens it if it's a file).
-
-## 20. Status bar
-
-- [ ] **20.1** Quota progress + `usage / quota` + `%` are visible and update after upload/delete.
-- [ ] **20.2** File count + dir count match what you see in the tree.
-- [ ] **20.3** Origin (e.g. `chrome-extension://<id>`) shows on the right, prefixed by a globe icon.
-- [ ] **20.4** Open a tab → its size appears in the right portion of the status bar.
-
-## 21. Theme sync
-
-- [ ] **21.1** DevTools → ⋮ menu → **Settings** → **Preferences** → switch theme between Dark/Light.
-- [ ] **21.2** OPFS panel re-themes within a moment (background, text, syntax highlighting all swap).
-
-## 22. Keyboard shortcuts
-
-Press **?** (with focus outside any text input) → ShortcutSheet opens. Verify each:
-
-- [ ] **22.1** **⌘P / Ctrl+P** → Quick Open
-- [ ] **22.2** **⌘S** → Save (only when dirty)
-- [ ] **22.3** **⌘W** → Close active tab
-- [ ] **22.4** **⌘N** → New file in the current dir
-- [ ] **22.5** **⇧⌘N** → New directory
-- [ ] **22.6** **F2** → Rename selected
-- [ ] **22.7** **Delete** → Delete selected (with confirm)
-- [ ] **22.8** **↑ / ↓** → Move tree selection
-- [ ] **22.9** **→ / ←** → Expand / collapse directory
-- [ ] **22.10** **Enter** → Open file or toggle directory
-- [ ] **22.11** **?** → Toggle this sheet
-- [ ] **22.12** **⌘.** → Toggle live watch (toolbar icon flips)
-
-## 23. Multi-origin behavior
-
-- [ ] **23.1** Open OPFS panel on the fixture (`chrome-extension://...`) → see fixture files.
-- [ ] **23.2** In the same DevTools window, navigate the inspected page to a different origin (e.g. `https://example.com`) → tree should refresh and now show that origin's OPFS (probably empty).
-- [ ] **23.3** Status bar origin updates accordingly.
-
-## 24. Big-file chunking
-
-- [ ] **24.1** Generate a 25 MB file: `head -c 26214400 /dev/urandom > big.bin`.
-- [ ] **24.2** Drop it on the OPFS tree → upload completes (chunked through 4 MB writes).
-- [ ] **24.3** Right-click → Download → bytes match: `sha256sum big.bin Downloads/big.bin` should produce identical hashes.
-- [ ] **24.4** Open `big.bin` → hex view loads via chunked reads; "Reading (XX%)" indicator visible during fetch.
-
-## 25. SQLite-Wasm in the wild
-
-- [ ] **25.1** Open `https://sqlite.org/wasm/demo-123.html` (or any other live SQLite-Wasm app you use).
-- [ ] **25.2** Run the demo's "Run" buttons to trigger writes.
-- [ ] **25.3** OPFS panel → see the database file appear.
-- [ ] **25.4** During an active write, the file should sometimes show the lock badge (depending on whether `SyncAccessHandle` is held open).
-- [ ] **25.5** Open the `.sqlite` file → SQLite viewer shows real tables. Run a SELECT.
-
-## 26. Web Store dry-run
-
-- [ ] **26.1** `pnpm package` → `brainwires-opfs.zip` ~1.2 MB at repo root.
-- [ ] **26.2** Upload to a *draft* listing in the Chrome Web Store dev dashboard. Walk through the privacy form: data collection = none, single purpose = OPFS file management in DevTools.
-- [ ] **26.3** No reviewer-blocking flags raised (broad host permissions, remote code, unjustified `<all_urls>`).
+If `pnpm test` is green, the bridge, the RPC, the data path, and the manifest are all
+verified. The list below is **only** what those automated tests genuinely can't reach.
 
 ---
 
-Track your run with: `cp TESTING.md TESTING.run.md` and check off as you go. Anything that
-fails: copy the failing item number into a GitHub issue with browser version and console
-output.
+## Manual checklist (requires a real browser + DevTools panel + a human)
+
+### A. Installation
+
+- [ ] **A.1** `pnpm build && open chrome://extensions` → Developer mode on → **Load unpacked** → pick `dist/`. Card shows "Brainwires OPFS" with the gradient folder icon.
+- [ ] **A.2** Open DevTools on any normal http(s) page. The **OPFS** tab appears alongside Elements/Console.
+
+### B. The "OPFS" panel renders
+
+- [ ] **B.1** Switch to the OPFS panel. Layout matches the design: top toolbar, left tree pane (resizable handle), right content pane, bottom status bar.
+- [ ] **B.2** Resizing the left/right split via the handle works smoothly.
+- [ ] **B.3** Empty / disconnected states look right:
+  - On a `chrome://newtab/` style page → "OPFS isn't reachable from this page".
+  - On a normal page that's never used OPFS → empty-OPFS state with the origin shown.
+  - Without an open tab → "No file selected" with the ⌘P hint.
+
+### C. Live OPFS data renders
+
+Open `chrome-extension://<id>/test-fixture.html` in a tab, click **Seed OPFS**, then
+open DevTools → OPFS panel.
+
+- [ ] **C.1** Tree shows `data/`, `db/`, `nested/`, `hello.txt`, `image.png`, `sample.json`. Click directories — they expand/collapse. Filter input narrows results.
+- [ ] **C.2** Status bar quota progress is visible and non-zero; origin (`chrome-extension://<id>`) shows on the right.
+
+### D. Type-aware viewers (visual rendering)
+
+- [ ] **D.1** `hello.txt` opens in CodeMirror with line numbers and syntax highlighting tied to extension.
+- [ ] **D.2** `data/notes.md` highlights as Markdown.
+- [ ] **D.3** `sample.json` is pretty-printed with JSON syntax highlighting.
+- [ ] **D.4** `image.png` renders as image, footer shows `image/png · 64 × 64 · <size>`.
+- [ ] **D.5** Drop a `.mp3`/`.mp4` onto the tree → opens with `<audio>`/`<video>` controls and plays.
+- [ ] **D.6** Drop a `.pdf` → "Rendering PDF…" then page canvases stack.
+- [ ] **D.7** Drop a real `.sqlite` (eg. `sqlite3 t.db 'CREATE TABLE u(id,name); INSERT u VALUES(1,"a");'`) → SQLite viewer shows tables left, rows right; pagination controls work; ad-hoc SELECT runs.
+- [ ] **D.8** Open `large.bin` after clicking **Add 5 MB blob** → hex+ASCII view scrolls smoothly to the end.
+- [ ] **D.9** On a text file, the viewer header **text/hex** toggle switches views.
+
+### E. Editor save flow (the part the bridge tests can't see)
+
+- [ ] **E.1** Edit `hello.txt` → tab badge shows dirty dot, status bar shows `● modified`, "Save (⌘S)" button appears in viewer header.
+- [ ] **E.2** Press ⌘S → marker clears. Refresh the panel (toolbar refresh) → edit persisted.
+
+### F. Drag & drop UX
+
+- [ ] **F.1** Drag any OS file onto the root of the tree → uploads. Toast shows count.
+- [ ] **F.2** Drag onto a specific directory → uploads into that directory.
+- [ ] **F.3** Drag a tree node out onto the desktop → file downloads (browser save-as may prompt).
+
+### G. Toolbar actions
+
+- [ ] **G.1** + file → prompt → file appears, opens.
+- [ ] **G.2** + folder → directory appears expanded.
+- [ ] **G.3** Upload (⤒) icon → file picker → multi-select uploads work.
+- [ ] **G.4** Export OPFS as .zip → downloads; opening the zip shows the entire tree with correct structure.
+- [ ] **G.5** Restore from .zip → wipe OPFS first (fixture button), then restore the just-downloaded zip → tree repopulates.
+- [ ] **G.6** Live watch toggle → flip on; in the fixture tab click **Seed OPFS** again → within ~2s panel tree refreshes and changed entries flash blue.
+- [ ] **G.7** Refresh icon reloads everything.
+
+### H. Context menu + inline edit
+
+- [ ] **H.1** Right-click a file → Download / Duplicate / Rename… / Delete (Delete is destructive-styled).
+- [ ] **H.2** Right-click a directory → Rename / Delete (Delete prompts about recursive removal).
+- [ ] **H.3** Inline rename succeeds; tree updates without losing selection.
+
+### I. Lock badge (visual side of automated lock detection)
+
+- [ ] **I.1** Click **Lock /db/lockable.bin** in the fixture; refresh the panel; the file shows a lock icon (amber) next to the name.
+- [ ] **I.2** Try to delete or rename the locked file → toast error mentions it's locked. Tree state stays consistent.
+- [ ] **I.3** Click **Unlock** in the fixture; on next refresh (or live watch tick) lock badge clears.
+
+### J. Stats treemap
+
+- [ ] **J.1** Toolbar HardDrive icon → switches to Stats view.
+- [ ] **J.2** Treemap renders, big rectangles for big files (`large.bin` should dominate after **Add 5 MB blob**).
+- [ ] **J.3** Hover any rectangle → header shows `path — size`. Click → switches back to Tree, selects the file, opens it.
+
+### K. Status bar accuracy
+
+- [ ] **K.1** Quota progress + `usage / quota` + `%` update after upload/delete.
+- [ ] **K.2** File count + dir count match the tree.
+- [ ] **K.3** Active tab's size shows on the right; dirty marker appears while editing.
+
+### L. Theme sync
+
+- [ ] **L.1** DevTools → ⋮ → **Settings** → toggle Dark/Light. The OPFS panel re-themes within a moment, including syntax highlighting and toasts.
+
+### M. Keyboard shortcuts
+
+Hit **?** anywhere outside a text input to show the sheet, then exercise:
+
+- [ ] **M.1** ⌘P → palette opens, fuzzy filter works, Enter opens the file
+- [ ] **M.2** ⌘S → save (only when dirty)
+- [ ] **M.3** ⌘W → closes active tab
+- [ ] **M.4** ⌘N → new file in current dir
+- [ ] **M.5** ⇧⌘N → new directory
+- [ ] **M.6** F2 → rename selected
+- [ ] **M.7** Delete → delete with confirm
+- [ ] **M.8** ↑ / ↓ / → / ← / Enter → tree navigation works
+- [ ] **M.9** ? → toggles the sheet
+- [ ] **M.10** ⌘. → toggles live watch (toolbar icon flips)
+
+### N. Multi-origin
+
+- [ ] **N.1** Open OPFS panel on the fixture (`chrome-extension://...`) → see fixture files.
+- [ ] **N.2** In the same DevTools window, navigate the inspected page to a different origin (e.g. `https://example.com`) → tree refreshes, status-bar origin updates, panel shows that origin's OPFS.
+
+### O. Real SQLite-Wasm in the wild
+
+- [ ] **O.1** Open `https://sqlite.org/wasm/demo-123.html` (or any live OPFS-Wasm app you use). Click Run on a demo to trigger writes.
+- [ ] **O.2** OPFS panel shows the database file. Open it → real schema and rows appear in the SQLite browser.
+- [ ] **O.3** During an active write, the file may show the lock badge (depending on whether the page holds a `SyncAccessHandle` open).
+
+### P. Web Store dry-run
+
+- [ ] **P.1** `pnpm package` → `brainwires-opfs.zip` ~1.2 MB at repo root.
+- [ ] **P.2** Upload to a *draft* listing in the Chrome Web Store dev dashboard. Walk through the privacy form: data collection = none; single purpose = OPFS file management in DevTools.
+- [ ] **P.3** No reviewer-blocking flags raised (no broad host permissions, no remote code, no unjustified `<all_urls>`).
+
+---
+
+If anything in **A–O** fails, file an issue with the section letter, the browser
+version, and any console output. If a manual finding suggests a regression we *should*
+have caught automatically, please add a corresponding test to `tests/unit/` or
+`tests/bridge/` so it can't slip past again.
