@@ -1,4 +1,4 @@
-import { Database, FolderOpen, Loader2, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { Activity, Database, FolderOpen, Loader2, RefreshCw, Save, Snowflake, Trash2 } from 'lucide-react';
 import { Button } from '../../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import { Badge } from '../../ui/badge';
@@ -7,6 +7,10 @@ import type { MultipartGroup } from '../../../lib/multipart';
 
 interface Props {
   group: MultipartGroup;
+  /** 'live' = routing through page's exposeForDevtools bridge; 'snapshot' = local Database from bytes. */
+  engineMode: 'live' | 'snapshot' | null;
+  /** Bridged db name when engineMode==='live'. */
+  bridgedName?: string | null;
   dirty: boolean;
   saving: boolean;
   onRefresh: () => void;
@@ -17,6 +21,8 @@ interface Props {
 
 export function Header({
   group,
+  engineMode,
+  bridgedName,
   dirty,
   saving,
   onRefresh,
@@ -33,6 +39,36 @@ export function Header({
       <Database className="h-4 w-4 text-sky-500" />
       <span className="font-medium text-sm">{group.base}</span>
       <Badge variant={group.mode === 'pure' ? 'default' : 'secondary'}>{modeBadge}</Badge>
+      {engineMode === 'live' && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="default" className="gap-1 bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/20">
+              <Activity className="h-3 w-3" />
+              live{bridgedName && ` (${bridgedName})`}
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            Page exposed this db via exposeForDevtools(). Reads + writes go
+            through the page's own engine — no lock conflict.
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {engineMode === 'snapshot' && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge variant="secondary" className="gap-1">
+              <Snowflake className="h-3 w-3" />
+              snapshot
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent>
+            Reading bytes directly from OPFS. Writes attempted while the page
+            holds the SyncAccessHandle will fail. Add{' '}
+            <code className="font-mono">exposeForDevtools(db)</code> to your
+            app for fully live editing.
+          </TooltipContent>
+        </Tooltip>
+      )}
       {shardCount > 1 && (
         <span className="text-xs text-muted-foreground tabular-nums">
           {shardCount} shards · {formatBytes(group.totalSize)}

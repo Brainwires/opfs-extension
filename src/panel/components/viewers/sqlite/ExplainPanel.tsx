@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { Database, Row } from 'rsqlite-wasm';
+import type { Row } from 'rsqlite-wasm';
+import type { AnyDatabase } from './SchemaTree';
 
 interface Props {
-  db: Database;
+  db: AnyDatabase;
   sql: string;
 }
 
@@ -16,14 +17,22 @@ export function ExplainPanel({ db, sql }: Props) {
       setError(null);
       return;
     }
-    try {
-      const result = db.query<Row>(`EXPLAIN QUERY PLAN ${sql}`);
-      setRows(result);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setRows(null);
-    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await db.query<Row>(`EXPLAIN QUERY PLAN ${sql}`);
+        if (cancelled) return;
+        setRows(result);
+        setError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setRows(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [db, sql]);
 
   if (error) {

@@ -1,16 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowUp, Loader2 } from 'lucide-react';
-import type { Database, Row, SqlValue } from 'rsqlite-wasm';
+import type { Row, SqlValue } from 'rsqlite-wasm';
 import { Button } from '../../ui/button';
 import { renderCell } from './cellRenderers';
 import { cn } from '../../../lib/utils';
 import { qident } from '../../../lib/sqlIdent';
-import type { TableSchema } from './SchemaTree';
+import type { AnyDatabase, TableSchema } from './SchemaTree';
 
 const PAGE_SIZE = 100;
 
 interface Props {
-  db: Database;
+  db: AnyDatabase;
   table: TableSchema;
   /** Optional initial filter: e.g. for FK click-through, prefill `{ column, value }`
    *  as a strict-equality WHERE condition instead of a LIKE. */
@@ -68,27 +68,34 @@ export function DataGrid({
   const orderClause = sort ? ` ORDER BY ${qident(sort.col)} ${sort.dir.toUpperCase()}` : '';
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    try {
-      const tname = qident(table.name);
-      const offset = page * PAGE_SIZE;
-      // Don't trust COUNT(*) AS c — alias preservation has been a portability gotcha.
-      // Read the value out of the first column regardless of its key name.
-      const countSql = `SELECT COUNT(*) FROM ${tname} ${filterClause.sql}`;
-      const cnt = db.queryOne<Row>(countSql, filterClause.params as SqlValue[]);
-      const cntFirst = cnt ? Object.values(cnt)[0] : 0;
-      setTotalRows(Number(cntFirst ?? 0));
-      const selectSql = `SELECT * FROM ${tname} ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
-      setLastSql(selectSql);
-      const r = db.query<Row>(selectSql, filterClause.params as SqlValue[]);
-      setRows(r);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
+    (async () => {
+      try {
+        const tname = qident(table.name);
+        const offset = page * PAGE_SIZE;
+        const countSql = `SELECT COUNT(*) FROM ${tname} ${filterClause.sql}`;
+        const cnt = await db.queryOne<Row>(countSql, filterClause.params as SqlValue[]);
+        if (cancelled) return;
+        const cntFirst = cnt ? Object.values(cnt)[0] : 0;
+        setTotalRows(Number(cntFirst ?? 0));
+        const selectSql = `SELECT * FROM ${tname} ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
+        setLastSql(selectSql);
+        const r = await db.query<Row>(selectSql, filterClause.params as SqlValue[]);
+        if (cancelled) return;
+        setRows(r);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setRows([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [db, table.name, filterClause, orderClause, page, refreshKey]);
 
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
@@ -255,7 +262,7 @@ function DataRow({
   table: TableSchema;
   displayColumns: { name: string; type: string }[];
   pkCol: string | null;
-  db: Database;
+  db: AnyDatabase;
   onFkClick: (toTable: string, toColumn: string, value: SqlValue) => void;
   onRowEdited: () => void;
 }) {
@@ -270,7 +277,7 @@ function DataRow({
     setDraft(cur === null ? '' : String(cur));
   };
 
-  const commit = (col: string) => {
+  const commit = async (col: string) => {
     if (!pkCol) {
       setEditing(null);
       return;
@@ -286,7 +293,7 @@ function DataRow({
       const pkName = qident(pkCol);
       // Treat empty string as NULL when original was null
       const newValue = draft === '' && cur === null ? null : draft;
-      db.exec(
+      await db.exec(
         `UPDATE ${tname} SET ${colName} = ? WHERE ${pkName} = ?`,
         [newValue as SqlValue, row[pkCol] as SqlValue],
       );
@@ -320,9 +327,9 @@ function DataRow({
                 autoFocus
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                onBlur={() => commit(c.name)}
+                onBlur={() => void commit(c.name)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') commit(c.name);
+                  if (e.key === 'Enter') void commit(c.name);
                   if (e.key === 'Escape') setEditing(null);
                 }}
                 className="w-full bg-background border border-primary px-1 outline-none text-foreground"

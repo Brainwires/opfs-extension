@@ -12,6 +12,7 @@ import {
   type MultipartGroup,
 } from '../../../lib/multipart';
 import { downloadAs } from '../../../lib/sqlExport';
+import { bridgeInfo } from '../../../lib/rsqliteBridge';
 import { cn } from '../../../lib/utils';
 import { Header } from './Header';
 import { SchemaTree, readSchema, type SchemaSnapshot } from './SchemaTree';
@@ -46,7 +47,13 @@ export function SqliteViewer({ group }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const { db, loading: engineLoading, error: engineError } = useSqliteEngine(bytes);
+  const {
+    db,
+    mode: engineMode,
+    bridgedName,
+    loading: engineLoading,
+    error: engineError,
+  } = useSqliteEngine(bytes, group.base);
   const [schema, setSchema] = useState<SchemaSnapshot | null>(null);
 
   const [tabs, setTabs] = useState<InnerTab[]>([]);
@@ -77,17 +84,53 @@ export function SqliteViewer({ group }: Props) {
     };
   }, [group, reloadKey]);
 
+  // Auto-refresh in live mode: poll the bridge's changeCounter every 1s.
+  // When the page (or another browser context) writes through the same
+  // exposed Database, we bump reloadKey so SchemaTree re-reads and the
+  // active DataGrid re-fetches.
+  useEffect(() => {
+    if (engineMode !== 'live' || !bridgedName) return;
+    let cancelled = false;
+    let last = -1;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const info = await bridgeInfo(bridgedName);
+        if (cancelled) return;
+        if (info && last >= 0 && info.changeCounter !== last) {
+          setReloadKey((k) => k + 1);
+        }
+        if (info) last = info.changeCounter;
+      } catch {
+        /* swallow — bridge may have been torn down */
+      }
+    };
+    void tick();
+    const handle = setInterval(() => void tick(), 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [engineMode, bridgedName]);
+
   // Read schema once db is ready
   useEffect(() => {
     if (!db) {
       setSchema(null);
       return;
     }
-    try {
-      setSchema(readSchema(db));
-    } catch (e) {
-      console.error(e);
-    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await readSchema(db);
+        if (!cancelled) setSchema(s);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [db, reloadKey]);
 
   // Prune-stale-tabs: when the schema changes (e.g. after a Reload from
@@ -150,7 +193,7 @@ export function SqliteViewer({ group }: Props) {
   }, []);
 
   const runQuery = useCallback(
-    (sql: string) => {
+    async (sql: string) => {
       if (!db) return;
       consoleSqlRef.current = sql;
       const isSelect = /^\s*(SELECT|PRAGMA|EXPLAIN|WITH)\b/i.test(sql);
@@ -159,10 +202,9 @@ export function SqliteViewer({ group }: Props) {
         let rows: Row[] = [];
         let mutating = false;
         if (isSelect) {
-          rows = db.query<Row>(sql);
+          rows = await db.query<Row>(sql);
         } else {
-          // DDL/DML: execMany so semicolons split
-          db.execMany(sql);
+          await db.execMany(sql);
           mutating = true;
         }
         const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
@@ -178,9 +220,10 @@ export function SqliteViewer({ group }: Props) {
         setTabs((prev) => [...prev, tab]);
         setActiveId(id);
         if (mutating) {
-          setDirty(true);
-          // refresh schema (in case DDL changed it)
-          setSchema(readSchema(db));
+          // In live mode the page already saw the write; nothing to "save".
+          // In snapshot mode we still mark dirty so the user can save back.
+          if (engineMode === 'snapshot') setDirty(true);
+          setSchema(await readSchema(db));
         }
         toast.success(
           isSelect
@@ -192,7 +235,7 @@ export function SqliteViewer({ group }: Props) {
         toast.error(e instanceof Error ? e.message : String(e));
       }
     },
-    [db],
+    [db, engineMode],
   );
 
   const runExplain = useCallback(
@@ -236,14 +279,22 @@ export function SqliteViewer({ group }: Props) {
   );
 
   const onRowEdited = useCallback(() => {
-    setDirty(true);
-  }, []);
+    // Live mode: page already saw the write; nothing to mark dirty.
+    if (engineMode === 'snapshot') setDirty(true);
+  }, [engineMode]);
 
   const handleSave = useCallback(async () => {
     if (!db || !dirty) return;
+    if (engineMode === 'live') {
+      toast.info('Live mode — writes are committed immediately, nothing to save.');
+      setDirty(false);
+      return;
+    }
     setSaving(true);
     try {
-      const buf = db.toBuffer();
+      // Only available on the snapshot Database (toBuffer is part of the
+      // local rsqlite-wasm Database surface, not the bridged proxy).
+      const buf = (db as { toBuffer(): Uint8Array }).toBuffer();
       const result = await reshardAndWrite(group, buf);
       setDirty(false);
       toast.success(
@@ -257,7 +308,7 @@ export function SqliteViewer({ group }: Props) {
     } finally {
       setSaving(false);
     }
-  }, [db, dirty, group, reloadAncestor]);
+  }, [db, dirty, engineMode, group, reloadAncestor]);
 
   const handleRefresh = useCallback(() => {
     if (dirty && !window.confirm('Discard unsaved changes and reload?')) return;
@@ -273,13 +324,19 @@ export function SqliteViewer({ group }: Props) {
 
   const handleExportSqlite = useCallback(() => {
     if (!db) return;
+    if (engineMode === 'live') {
+      toast.error(
+        'Export to .sqlite is unavailable in live mode (the page owns the file). Try Reload from OPFS to switch to snapshot mode first.',
+      );
+      return;
+    }
     try {
-      const buf = db.toBuffer();
+      const buf = (db as { toBuffer(): Uint8Array }).toBuffer();
       downloadAs(buf, `${group.base.replace(/\.\d+$/, '')}.sqlite`, 'application/vnd.sqlite3');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     }
-  }, [db, group.base]);
+  }, [db, engineMode, group.base]);
 
   const handleCleanupBare = useCallback(async () => {
     if (!group.bareLeftover) return;
@@ -336,6 +393,8 @@ export function SqliteViewer({ group }: Props) {
     <div className="flex flex-col h-full min-h-0">
       <Header
         group={group}
+        engineMode={engineMode}
+        bridgedName={bridgedName}
         dirty={dirty}
         saving={saving}
         onRefresh={handleRefresh}
@@ -481,7 +540,7 @@ function TableTabContent({
   onRowEdited,
   refreshKey,
 }: {
-  db: import('rsqlite-wasm').Database;
+  db: import('./SchemaTree').AnyDatabase;
   tableName: string;
   schema: SchemaSnapshot;
   filter: InnerTab['filter'];

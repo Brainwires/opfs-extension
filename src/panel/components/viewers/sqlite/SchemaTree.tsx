@@ -11,9 +11,13 @@ import {
   Table as TableIcon,
   Zap,
 } from 'lucide-react';
-import type { Database, Row } from 'rsqlite-wasm';
+import type { Row } from 'rsqlite-wasm';
 import { cn } from '../../../lib/utils';
 import { qident as quote } from '../../../lib/sqlIdent';
+import type { BridgedDatabase } from '../../../lib/rsqliteBridge';
+import type { Database } from 'rsqlite-wasm';
+
+export type AnyDatabase = Database | BridgedDatabase;
 
 interface ColumnInfo {
   cid: number;
@@ -52,10 +56,19 @@ export interface SchemaSnapshot {
  * query for triggers when the engine appears to support it (sql.js etc.) and
  * silently skips when it doesn't.
  */
-export function readSchema(db: Database): SchemaSnapshot {
+// All SQL helpers are async because the bridged-page path returns Promises.
+// The local rsqlite-wasm Database returns sync values which await transparently.
+async function asArray<T>(v: T[] | Promise<T[]>): Promise<T[]> {
+  return await v;
+}
+async function asOne<T>(v: (T | null) | Promise<T | null>): Promise<T | null> {
+  return await v;
+}
+
+export async function readSchema(db: AnyDatabase): Promise<SchemaSnapshot> {
   // 1. Tables (and views, when the engine reports them)
   // PRAGMA table_list → columns: schema, name, type
-  const tableListRows = db.query<Row>('PRAGMA table_list');
+  const tableListRows = await asArray(db.query<Row>('PRAGMA table_list'));
   const userTables = tableListRows.filter((r) => {
     const name = String(r.name ?? '');
     const schema = String(r.schema ?? 'main');
@@ -65,12 +78,13 @@ export function readSchema(db: Database): SchemaSnapshot {
     return true;
   });
 
-  const tables: TableSchema[] = userTables.map((row) => {
+  const tables: TableSchema[] = [];
+  for (const row of userTables) {
     const name = String(row.name);
     const type = (String(row.type ?? 'table') === 'view' ? 'view' : 'table') as 'view' | 'table';
     let columns: ColumnInfo[] = [];
     try {
-      const cols = db.query<Row>(`PRAGMA table_info(${quote(name)})`);
+      const cols = await asArray(db.query<Row>(`PRAGMA table_info(${quote(name)})`));
       columns = cols.map((c) => ({
         cid: Number(c.cid),
         name: String(c.name),
@@ -84,7 +98,7 @@ export function readSchema(db: Database): SchemaSnapshot {
     }
     let fks: FkInfo[] = [];
     try {
-      const fkRows = db.query<Row>(`PRAGMA foreign_key_list(${quote(name)})`);
+      const fkRows = await asArray(db.query<Row>(`PRAGMA foreign_key_list(${quote(name)})`));
       fks = fkRows.map((f) => ({
         fromColumn: String(f.from),
         toTable: String(f.table),
@@ -95,58 +109,52 @@ export function readSchema(db: Database): SchemaSnapshot {
     }
     let rowCount = 0;
     try {
-      // Read the first column regardless of alias preservation — some engines
-      // return the key as the literal expression (e.g., "COUNT(*)") rather than
-      // the AS alias.
-      const r = db.queryOne<Row>(`SELECT COUNT(*) FROM ${quote(name)}`);
+      const r = await asOne(db.queryOne<Row>(`SELECT COUNT(*) FROM ${quote(name)}`));
       const first = r ? Object.values(r)[0] : 0;
       rowCount = Number(first ?? 0);
     } catch {
       // some views fail to count
     }
-    return { name, type, columns, fks, rowCount };
-  });
+    tables.push({ name, type, columns, fks, rowCount });
+  }
 
-  // 2. Indexes — collected per-table via PRAGMA index_list. There's no
-  //    cross-table enumeration in rsqlite-wasm without sqlite_schema.
+  // 2. Indexes — collected per-table via PRAGMA index_list.
   const indexes: SchemaSnapshot['indexes'] = [];
   for (const t of tables) {
     try {
-      const ixRows = db.query<Row>(`PRAGMA index_list(${quote(t.name)})`);
+      const ixRows = await asArray(db.query<Row>(`PRAGMA index_list(${quote(t.name)})`));
       for (const ix of ixRows) {
         const ixName = String(ix.name);
-        if (ixName.startsWith('sqlite_autoindex_')) continue; // implicit PK index
-        // No SQL text available from PRAGMA index_list; show a synthetic summary instead
+        if (ixName.startsWith('sqlite_autoindex_')) continue;
         let sql = '';
         try {
-          const cols = db.query<Row>(`PRAGMA index_info(${quote(ixName)})`);
+          const cols = await asArray(db.query<Row>(`PRAGMA index_info(${quote(ixName)})`));
           sql = `CREATE${ix.unique ? ' UNIQUE' : ''} INDEX ${ixName} ON ${t.name}(${cols
             .map((c) => String(c.name))
             .join(', ')})`;
         } catch {
-          // ignore
+          /* ignore */
         }
         indexes.push({ name: ixName, tableName: t.name, sql });
       }
     } catch {
-      // table doesn't support index_list (virtual/shadow); skip
+      /* virtual/shadow */
     }
   }
 
-  // 3. Triggers — best-effort sqlite_schema query for engines that support it
-  //    (standard SQLite via sql.js, etc.). rsqlite-wasm doesn't, so it returns []
-  //    silently.
+  // 3. Triggers — best-effort sqlite_schema query for engines that support it.
   let triggers: SchemaSnapshot['triggers'] = [];
   try {
-    triggers = db
-      .query<Row>(
+    const tr = await asArray(
+      db.query<Row>(
         "SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='trigger' ORDER BY name",
-      )
-      .map((r) => ({
-        name: String(r.name),
-        tableName: String(r.tbl_name ?? ''),
-        sql: String(r.sql ?? ''),
-      }));
+      ),
+    );
+    triggers = tr.map((r) => ({
+      name: String(r.name),
+      tableName: String(r.tbl_name ?? ''),
+      sql: String(r.sql ?? ''),
+    }));
   } catch {
     triggers = [];
   }
@@ -165,13 +173,13 @@ export function readSchema(db: Database): SchemaSnapshot {
     'encoding',
   ]) {
     try {
-      const r = db.queryOne<Row>(`PRAGMA ${key}`);
+      const r = await asOne(db.queryOne<Row>(`PRAGMA ${key}`));
       if (r) {
         const v = Object.values(r)[0] as string | number;
         pragmas[key] = v;
       }
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
@@ -179,7 +187,7 @@ export function readSchema(db: Database): SchemaSnapshot {
 }
 
 interface Props {
-  db: Database;
+  db: AnyDatabase;
   onOpenTable: (name: string) => void;
   onInsertSnippet: (snippet: string) => void;
   selectedTable?: string;
@@ -199,15 +207,23 @@ export function SchemaTree({ db, onOpenTable, onInsertSnippet, selectedTable, re
 
   const [readError, setReadError] = useState<string | null>(null);
   useEffect(() => {
-    try {
-      setReadError(null);
-      setSchema(readSchema(db));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('readSchema failed', e);
-      setReadError(msg);
-      setSchema({ tables: [], indexes: [], triggers: [], pragmas: {} });
-    }
+    let cancelled = false;
+    setReadError(null);
+    (async () => {
+      try {
+        const result = await readSchema(db);
+        if (!cancelled) setSchema(result);
+      } catch (e) {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('readSchema failed', e);
+        setReadError(msg);
+        setSchema({ tables: [], indexes: [], triggers: [], pragmas: {} });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [db, refreshKey]);
 
   if (!schema) {

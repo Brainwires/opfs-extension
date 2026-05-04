@@ -18,7 +18,15 @@ DevTools panel.
   - Text + JSON with **CodeMirror 6 editor** and ⌘S to save
   - Image (PNG/JPG/GIF/WebP/SVG) and audio/video previews
   - **PDF** rendering via pdfjs
-  - **SQLite** table browser via sql.js — list tables, paginate rows, run ad-hoc SELECT
+  - **SQLite** IDE: schema browser (tables/columns/PKs/FKs/indexes/pragmas),
+    paginated data grid with FK click-through, SQL console with autocomplete +
+    history + saved queries, EXPLAIN, CSV/JSON/SQL-INSERT export. Powered by
+    [rsqlite-wasm](https://github.com/Brainwires/rsqlite-wasm). **Live-edit mode**
+    when the inspected app calls `exposeForDevtools(db)` — writes route through
+    the page's own engine, no OPFS lock conflict, auto-refresh on the page's
+    own writes (see [Live editing](#live-editing) below).
+  - **Multipart group recognition** — rsqlite-wasm's `db.000`, `.001`, … shards
+    show as one virtual row in the tree; expanding reveals individual shards.
   - Hex+ASCII view for everything else, virtualized for large files
 - **Quick Open palette** (⌘P) — fuzzy search across every OPFS file
 - **Stats treemap** — see what's eating your OPFS quota by directory and file type
@@ -88,6 +96,51 @@ The fixture also has buttons to:
 - Add a 5 MB random blob (exercises chunked read/write)
 - Lock a file with `FileSystemSyncAccessHandle` so you can verify the lock badge
 - Wipe everything
+
+## Live editing
+
+By default the SQLite viewer loads a *snapshot* of the database from OPFS — it
+reads the bytes, instantiates a local rsqlite-wasm `Database`, and shows you
+the schema and rows. Edits attempted in this mode will fail when the inspected
+page is actively using the database, because OPFS `SyncAccessHandle` is
+exclusive — only one writer at a time.
+
+To get fully live editing (UPDATE/INSERT/DDL while the page is using the
+database, plus auto-refresh when the page itself writes), the page opts in
+with one line at startup:
+
+```javascript
+import { Database, exposeForDevtools } from 'rsqlite-wasm';
+
+const db = await Database.open('chat', { backend: 'opfs' });
+exposeForDevtools(db, { name: 'chat' });
+
+// Or with WorkerDatabase, same call:
+const db = await WorkerDatabase.open('chat');
+exposeForDevtools(db, { name: 'chat' });
+
+// Tree-shake out in production:
+exposeForDevtools(db, {
+  name: 'chat',
+  disabled: process.env.NODE_ENV === 'production',
+});
+```
+
+When `exposeForDevtools` is in place:
+
+- The viewer's header shows a green **● live (name)** badge.
+- All SQL — reads, writes, DDL — flows through the page's own `Database` via
+  a `postMessage`-style bridge installed at `window.__BRAINWIRES_RSQLITE_DEVTOOLS__`.
+  No second handle, no lock conflict, writes are seen by the page immediately.
+- The viewer polls a `changeCounter` so when the page writes (from its own
+  code), the schema and current table re-fetch automatically.
+- The "Save" button becomes a no-op (writes already committed). "Export as
+  .sqlite" is unavailable in live mode (use Reload from OPFS to switch to
+  snapshot mode for that).
+
+If `exposeForDevtools` isn't called, the viewer falls back to snapshot mode
+silently — there's no warning, just a grey **● snapshot** badge in the header
+and a hint explaining how to enable live mode.
 
 ## Permissions
 
