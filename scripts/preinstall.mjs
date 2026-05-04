@@ -21,7 +21,12 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const submoduleDir = path.join(root, 'vendor', 'rsqlite-wasm');
 const submoduleJs = path.join(submoduleDir, 'js');
+// Both must exist for the engine to be loadable. The wasm-pack output gives us the
+// .wasm + glue, the tsc output gives us the JS wrapper that consumers import. An
+// interrupted previous build can leave one without the other — so check both.
 const wasmFile = path.join(submoduleJs, 'dist', 'wasm', 'rsqlite_wasm_bg.wasm');
+const tsEntry = path.join(submoduleJs, 'dist', 'index.js');
+const buildComplete = () => existsSync(wasmFile) && existsSync(tsEntry);
 
 const yellow = (s) => `\x1b[33m${s}\x1b[0m`;
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -179,10 +184,13 @@ if (!process.env.CI && !process.env.BRAINWIRES_NO_AUTO_PULL && hasCommand('git')
 }
 
 // Step 3: build the wasm if needed (or if step 2 pulled new commits)
-if (!existsSync(wasmFile) || pulledNewCommits) {
-  console.error(
-    yellow(pulledNewCommits ? '→ Rebuilding rsqlite-wasm…' : '→ Building rsqlite-wasm (one-time)…'),
-  );
+if (!buildComplete() || pulledNewCommits) {
+  const reason = pulledNewCommits
+    ? '→ Rebuilding rsqlite-wasm…'
+    : !existsSync(wasmFile)
+      ? '→ Building rsqlite-wasm (one-time)…'
+      : '→ Finishing previous rsqlite-wasm build (interrupted earlier)…';
+  console.error(yellow(reason));
   if (!hasCommand('wasm-pack')) {
     bail(
       'wasm-pack is not on PATH; cannot build rsqlite-wasm.',
@@ -206,23 +214,38 @@ if (!existsSync(wasmFile) || pulledNewCommits) {
     );
   }
   try {
-    // `npm ci` reproduces the exact lockfile contents (no rewrite) — avoids the
-    // perpetual "modified js/package-lock.json" dirty state. Falls back to
-    // `npm install` only if the lockfile is missing or out of sync.
+    // Try `npm ci` first (reproduces the lockfile exactly without rewrite). It
+    // fails on macOS when the committed lockfile was generated on Linux and is
+    // missing platform-specific transitive deps — that's expected, not scary, so
+    // we capture its noisy output and silently fall back to `npm install`.
     const ciResult = spawnSync('npm', ['ci', '--no-audit', '--no-fund'], {
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       cwd: submoduleJs,
       shell: process.platform === 'win32',
+      encoding: 'utf-8',
     });
     if (ciResult.status !== 0) {
-      console.error(yellow('→ npm ci failed; falling back to npm install…'));
-      run('npm', ['install', '--no-audit', '--no-fund'], { cwd: submoduleJs });
+      console.error(
+        dim('  (npm ci skipped — falling back to npm install for cross-platform deps)'),
+      );
+      const installResult = spawnSync('npm', ['install', '--no-audit', '--no-fund'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: submoduleJs,
+        shell: process.platform === 'win32',
+        encoding: 'utf-8',
+      });
+      if (installResult.status !== 0) {
+        // Both failed — print everything we suppressed so the user can see why.
+        process.stderr.write(ciResult.stderr || ciResult.stdout || '');
+        process.stderr.write(installResult.stderr || installResult.stdout || '');
+        throw new Error('npm install failed');
+      }
     }
     run('npm', ['run', 'build'], { cwd: submoduleJs });
   } catch (e) {
     bail(
       `rsqlite-wasm build failed: ${e.message}`,
-      'Try running it manually for full output:\n  cd vendor/rsqlite-wasm/js && npm ci && npm run build',
+      'Try running it manually for full output:\n  cd vendor/rsqlite-wasm/js && npm install && npm run build',
     );
   }
 }
