@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Brainwires OPFS — test fixture</title>
+    <style>
+      body {
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        max-width: 720px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #111;
+      }
+      pre {
+        background: #f4f4f5;
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        overflow-x: auto;
+      }
+      button {
+        padding: 0.4rem 0.9rem;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+        background: #fff;
+        cursor: pointer;
+        margin-right: 0.25rem;
+        margin-bottom: 0.25rem;
+      }
+      button:hover {
+        background: #f0f0f0;
+      }
+      .ok {
+        color: #16a34a;
+      }
+      .err {
+        color: #dc2626;
+      }
+      ul {
+        line-height: 1.7;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Brainwires OPFS — test fixture</h1>
+    <p>
+      This page seeds the Origin Private File System for this origin with a variety of files
+      so you can exercise the DevTools panel. Open this page in a normal tab, click
+      <strong>Seed OPFS</strong>, then open DevTools and switch to the <strong>OPFS</strong> panel.
+    </p>
+    <div>
+      <button id="seed">Seed OPFS</button>
+      <button id="grow">Add 5 MB random blob</button>
+      <button id="lock">Lock /db/lockable.bin</button>
+      <button id="unlock" disabled>Unlock</button>
+      <button id="wipe">Wipe OPFS</button>
+    </div>
+    <pre id="log">Ready.</pre>
+
+    <h2>What gets created</h2>
+    <ul>
+      <li><code>/hello.txt</code> — small UTF-8 text</li>
+      <li><code>/sample.json</code> — pretty JSON with nested structure</li>
+      <li><code>/image.png</code> — 64×64 generated PNG</li>
+      <li><code>/data/notes.md</code> — Markdown</li>
+      <li><code>/data/config.toml</code> — TOML</li>
+      <li><code>/db/main.sqlite</code> — file with SQLite magic header (placeholder)</li>
+      <li><code>/db/lockable.bin</code> — locked on demand to test the lock badge</li>
+      <li><code>/nested/deep/path/leaf.log</code> — to test tree depth and breadcrumbs</li>
+      <li><code>/large.bin</code> — 5 MB random binary (only when you click "Add 5 MB blob")</li>
+    </ul>
+
+    <script type="module">
+      const log = document.getElementById('log');
+      function say(msg, cls = '') {
+        log.innerHTML += '\n' + (cls ? `<span class="${cls}">${msg}</span>` : msg);
+      }
+      function clear() {
+        log.textContent = '';
+      }
+
+      const enc = new TextEncoder();
+
+      async function getRoot() {
+        if (!navigator.storage?.getDirectory) throw new Error('OPFS unavailable');
+        return navigator.storage.getDirectory();
+      }
+
+      async function dirOf(parts, { create = true } = {}) {
+        let cur = await getRoot();
+        for (const p of parts) cur = await cur.getDirectoryHandle(p, { create });
+        return cur;
+      }
+
+      async function writeFile(path, data) {
+        const parts = path.split('/').filter(Boolean);
+        const name = parts.pop();
+        const dir = await dirOf(parts);
+        const h = await dir.getFileHandle(name, { create: true });
+        const w = await h.createWritable();
+        await w.write(data);
+        await w.close();
+        return h;
+      }
+
+      function makePng() {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createLinearGradient(0, 0, 64, 64);
+        grad.addColorStop(0, '#0ea5e9');
+        grad.addColorStop(1, '#1e40af');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 64, 64);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 18px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('OPFS', 32, 32);
+        return new Promise((resolve) => canvas.toBlob((b) => b.arrayBuffer().then(resolve), 'image/png'));
+      }
+
+      function fakeSqlite() {
+        const headerStr = 'SQLite format 3';
+        const out = new Uint8Array(headerStr.length + 1 + 512);
+        for (let i = 0; i < headerStr.length; i++) out[i] = headerStr.charCodeAt(i);
+        out[headerStr.length] = 0;
+        for (let i = 0; i < 512; i++) out[headerStr.length + 1 + i] = (i * 7) & 0xff;
+        return out;
+      }
+
+      document.getElementById('seed').addEventListener('click', async () => {
+        clear();
+        try {
+          await writeFile('/hello.txt', enc.encode('Hello from the test fixture!\nLine 2.\n'));
+          await writeFile(
+            '/sample.json',
+            enc.encode(
+              JSON.stringify(
+                {
+                  origin: location.origin,
+                  generated: new Date().toISOString(),
+                  array: [1, 2, 3, { nested: 'works' }],
+                },
+                null,
+                2,
+              ),
+            ),
+          );
+          await writeFile('/image.png', new Uint8Array(await makePng()));
+          await writeFile('/data/notes.md', enc.encode('# Notes\n\n- one\n- two\n- three\n'));
+          await writeFile('/data/config.toml', enc.encode('[server]\nport = 8080\nhost = "0.0.0.0"\n'));
+          await writeFile('/db/main.sqlite', fakeSqlite());
+          await writeFile('/db/lockable.bin', new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+          await writeFile('/nested/deep/path/leaf.log', enc.encode('2026-05-04 boot ok\n'));
+          say('Seeded ✓', 'ok');
+        } catch (e) {
+          say('Failed: ' + e.message, 'err');
+        }
+      });
+
+      document.getElementById('grow').addEventListener('click', async () => {
+        try {
+          const N = 5 * 1024 * 1024;
+          const buf = new Uint8Array(N);
+          crypto.getRandomValues(buf.subarray(0, Math.min(N, 65536)));
+          // fill the rest deterministically so we can verify
+          for (let i = 65536; i < N; i++) buf[i] = (i * 13) & 0xff;
+          await writeFile('/large.bin', buf);
+          say(`Wrote /large.bin (${N.toLocaleString()} bytes)`, 'ok');
+        } catch (e) {
+          say('Failed: ' + e.message, 'err');
+        }
+      });
+
+      let lockHandle = null;
+      const lockBtn = document.getElementById('lock');
+      const unlockBtn = document.getElementById('unlock');
+      lockBtn.addEventListener('click', async () => {
+        try {
+          const root = await getRoot();
+          const db = await root.getDirectoryHandle('db', { create: true });
+          const fh = await db.getFileHandle('lockable.bin', { create: true });
+          // SyncAccessHandle requires a worker. Inline-worker approach:
+          const workerSrc = `self.onmessage = async (e) => {
+            const fh = e.data;
+            const sync = await fh.createSyncAccessHandle();
+            self.postMessage('locked');
+            // hold open
+            await new Promise(r => self.addEventListener('message', m => { if (m.data === 'release') { sync.close(); r(); } }));
+          };`;
+          const blob = new Blob([workerSrc], { type: 'text/javascript' });
+          const w = new Worker(URL.createObjectURL(blob), { type: 'module' });
+          await new Promise((res, rej) => {
+            w.onmessage = (m) => (m.data === 'locked' ? res() : null);
+            w.onerror = (e) => rej(e);
+            w.postMessage(fh);
+          });
+          lockHandle = w;
+          lockBtn.disabled = true;
+          unlockBtn.disabled = false;
+          say('Locked /db/lockable.bin', 'ok');
+        } catch (e) {
+          say('Lock failed: ' + e.message, 'err');
+        }
+      });
+      unlockBtn.addEventListener('click', () => {
+        if (lockHandle) {
+          lockHandle.postMessage('release');
+          lockHandle.terminate();
+          lockHandle = null;
+        }
+        lockBtn.disabled = false;
+        unlockBtn.disabled = true;
+        say('Released lock', 'ok');
+      });
+
+      document.getElementById('wipe').addEventListener('click', async () => {
+        try {
+          const root = await getRoot();
+          for await (const [name] of root.entries()) {
+            await root.removeEntry(name, { recursive: true });
+          }
+          say('Wiped ✓', 'ok');
+        } catch (e) {
+          say('Failed: ' + e.message, 'err');
+        }
+      });
+    </script>
+  </body>
+</html>
