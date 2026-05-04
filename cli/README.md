@@ -60,6 +60,20 @@ npx brainwires-opfs@latest
 Then in Chrome's `chrome://extensions` page, hit **↻ reload** on the extension card so it
 picks up the new files. (Chrome doesn't auto-reload unpacked extensions.)
 
+## How it's published
+
+This package is published to npm via [Trusted Publishing](https://docs.npmjs.com/trusted-publishers)
+from `.github/workflows/release.yml` on every `v*` tag push. No long-lived `NPM_TOKEN`
+exists; the workflow proves its identity to npm with a short-lived GitHub OIDC token,
+and every release ships with [provenance attestations](https://docs.npmjs.com/generating-provenance-statements)
+linking the published artifact back to the exact commit + workflow run that built it.
+
+You can verify provenance on any version:
+
+```bash
+npm audit signatures brainwires-opfs
+```
+
 ## License
 
 [MIT](https://github.com/Brainwires/opfs-extension/blob/main/LICENSE)

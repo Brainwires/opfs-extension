@@ -67,17 +67,19 @@ jobs:
       - name: Bundle CLI
         run: pnpm cli:bundle
 
-      - name: Setup Node for npm publish
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
+      # Trusted Publishing (OIDC) — no NPM_TOKEN secret required.
+      # Configure once at https://www.npmjs.com/package/brainwires-opfs/access
+      # → Trusted Publishers → add: GitHub repo Brainwires/opfs-extension,
+      # workflow .github/workflows/release.yml. The first publish claims the
+      # name; for that initial bootstrap you must either (a) pre-create the
+      # package on npm and add the trusted publisher first, or (b) do a single
+      # manual `npm publish` from a logged-in machine to claim the name.
+      - name: Use latest npm (Trusted Publishing requires npm >= 11.5)
+        run: npm install -g npm@latest
 
-      - name: Publish CLI to npm
+      - name: Publish CLI to npm via Trusted Publishing
         if: startsWith(github.ref, 'refs/tags/v')
         run: cd cli && npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Upload zip to GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
