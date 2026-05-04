@@ -87,6 +87,36 @@ describe('resolveGroup', () => {
     expect(g.shards.map((s) => s.name)).toEqual(['foo.db.000', 'foo.db.001']);
   });
 
+  test('pure mode classifies trailing zero-byte shards as reserved (not data)', () => {
+    // Mirrors rsqlite-wasm's pre-allocation pattern (maxShards = 16 by default).
+    const siblings = [
+      file('/bw.db.000', 4096),
+      file('/bw.db.001', 4096),
+      file('/bw.db.002', 0),
+      file('/bw.db.003', 0),
+      file('/bw.db.004', 0),
+    ];
+    const g = resolveGroup('/bw.db.000', siblings);
+    expect(g.mode).toBe('pure');
+    expect(g.shards.map((s) => s.name)).toEqual(['bw.db.000', 'bw.db.001']);
+    expect(g.reservedShards.map((s) => s.name)).toEqual(['bw.db.002', 'bw.db.003', 'bw.db.004']);
+    expect(g.totalSize).toBe(8192); // only counts active shards
+  });
+
+  test('pure mode: zero-byte holes BETWEEN data shards stay in active set', () => {
+    // A zero-byte shard in the middle is unusual but technically possible — the
+    // active-set is determined by the LAST non-zero shard, not the first zero.
+    const siblings = [
+      file('/db.000', 100),
+      file('/db.001', 0),  // hole
+      file('/db.002', 50), // data after hole
+      file('/db.003', 0),  // tail reserved
+    ];
+    const g = resolveGroup('/db.000', siblings);
+    expect(g.shards.map((s) => s.name)).toEqual(['db.000', 'db.001', 'db.002']);
+    expect(g.reservedShards.map((s) => s.name)).toEqual(['db.003']);
+  });
+
   test('pure mode flags bareLeftover when stale bare file coexists with .000', () => {
     const siblings = [file('/bw.db', 999), file('/bw.db.000', 100), file('/bw.db.001', 50)];
     const g = resolveGroup('/bw.db.001', siblings);
@@ -110,10 +140,16 @@ describe('resolveGroup', () => {
     expect(g.id).toBe('/standalone.sqlite');
   });
 
-  test('zero-byte .000 is treated as not-pure (boundary case)', () => {
+  test('zero-byte .000 + non-zero .001 is still pure (matches rsqlite-vfs discovery)', () => {
+    // Per rsqlite-vfs/src/multiplex.rs:71-111, probing rule is .000 EXISTENCE
+    // (not size). With .000 present, the bare file is the leftover and pure
+    // mode wins. The .000 is empty but the active range still extends through
+    // the last data shard.
     const siblings = [file('/x.db', 100), file('/x.db.000', 0), file('/x.db.001', 50)];
     const g = resolveGroup('/x.db', siblings);
-    expect(g.mode).toBe('legacy');
+    expect(g.mode).toBe('pure');
+    expect(g.bareLeftover?.path).toBe('/x.db');
+    expect(g.shards.map((s) => s.name)).toEqual(['x.db.000', 'x.db.001']);
   });
 });
 

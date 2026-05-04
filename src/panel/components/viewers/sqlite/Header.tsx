@@ -36,6 +36,14 @@ export function Header({
       {shardCount > 1 && (
         <span className="text-xs text-muted-foreground tabular-nums">
           {shardCount} shards · {formatBytes(group.totalSize)}
+          {group.reservedShards.length > 0 && (
+            <span
+              className="ml-1 opacity-70"
+              title={`${group.reservedShards.length} pre-allocated empty shards held open by the page`}
+            >
+              {' '}+{group.reservedShards.length} reserved
+            </span>
+          )}
         </span>
       )}
       {shardCount === 1 && (

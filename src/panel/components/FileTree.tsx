@@ -61,16 +61,17 @@ function iconFor(entry: FsEntry, expanded: boolean, isMultipart: boolean) {
 function multipartGroupForEntry(
   entry: FsEntry,
   groupsForDir: Map<string, MultipartGroup> | undefined,
-): { group: MultipartGroup; isBareLeftover: boolean } | null {
+): { group: MultipartGroup; isBareLeftover: boolean; isReserved: boolean } | null {
   if (!groupsForDir) return null;
   const parsed = parseShardName(entry.name);
   const base = parsed ? parsed.base : entry.name;
   const group = groupsForDir.get(base);
   if (!group) return null;
   const isShard = group.shards.some((s) => s.path === entry.path);
+  const isReserved = group.reservedShards.some((s) => s.path === entry.path);
   const isBare = group.bareLeftover?.path === entry.path;
-  if (!isShard && !isBare) return null;
-  return { group, isBareLeftover: isBare };
+  if (!isShard && !isReserved && !isBare) return null;
+  return { group, isBareLeftover: isBare, isReserved };
 }
 
 interface NodeRenderProps {
@@ -96,6 +97,7 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
   const groupInfo = entry.kind === 'file' ? multipartGroupForEntry(entry, groupsForDir) : null;
   const group = groupInfo?.group ?? null;
   const isBare = groupInfo?.isBareLeftover ?? false;
+  const isReserved = groupInfo?.isReserved ?? false;
 
   const handleClick = () => {
     select(entry.path);
@@ -104,6 +106,14 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
   };
 
   const handleDelete = async () => {
+    if (isReserved && group) {
+      toast.error(
+        `${entry.name} is reserved capacity for ${group.base} — the page is holding it open. ` +
+          `Close or pause the page first, then delete the whole group.`,
+        { duration: 6000 },
+      );
+      return;
+    }
     const ok = window.confirm(
       `Delete ${entry.path}${entry.kind === 'directory' ? ' and everything inside?' : '?'}`,
     );
@@ -115,7 +125,16 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
       await refreshQuota();
       toast.success(`Deleted ${entry.name}`);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/NoModificationAllowed|modifications are not allowed|Locked/i.test(msg)) {
+        toast.error(
+          `${entry.name} is held open by the inspected page (probably an active SQLite shard). ` +
+            `Close the page or pause writes, then try again.`,
+          { duration: 6000 },
+        );
+      } else {
+        toast.error(msg);
+      }
     }
   };
 
@@ -206,10 +225,34 @@ function TreeNode({ entry, depth, flashedAt }: NodeRenderProps) {
               <span className="w-3" />
             )}
             {iconFor(entry, expanded, !!group && !isBare)}
-            <span className={cn('truncate text-xs', isBare && 'text-amber-500')}>{entry.name}</span>
-            {group && !isBare && (
-              <Badge variant="default" className="ml-1" title={`Multipart group: ${group.shards.length} shards · ${formatBytes(group.totalSize)}`}>
+            <span
+              className={cn(
+                'truncate text-xs',
+                isBare && 'text-amber-500',
+                isReserved && 'text-muted-foreground/60 italic',
+              )}
+            >
+              {entry.name}
+            </span>
+            {group && !isBare && !isReserved && (
+              <Badge
+                variant="default"
+                className="ml-1"
+                title={`Multipart group: ${group.shards.length} active${group.reservedShards.length ? ` + ${group.reservedShards.length} reserved` : ''} · ${formatBytes(group.totalSize)}`}
+              >
                 ×{group.shards.length}
+                {group.reservedShards.length > 0 && (
+                  <span className="opacity-60">+{group.reservedShards.length}</span>
+                )}
+              </Badge>
+            )}
+            {isReserved && (
+              <Badge
+                variant="secondary"
+                className="ml-1"
+                title="Pre-allocated by rsqlite-wasm — the page holds a SyncAccessHandle on it. Don't delete individually."
+              >
+                reserved
               </Badge>
             )}
             {isBare && (

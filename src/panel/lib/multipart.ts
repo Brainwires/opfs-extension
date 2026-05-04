@@ -8,7 +8,15 @@ export interface MultipartGroup {
   base: string;
   dir: string;
   mode: MultipartMode;
+  /** Active data-bearing shards (size > 0), in order. */
   shards: FsEntry[];
+  /**
+   * Trailing zero-byte shards pre-allocated by rsqlite-wasm's multiplex VFS
+   * (maxShards default = 16). The page holds a SyncAccessHandle on each, so
+   * they cannot be deleted while the page is alive — and they're not "extra
+   * orphan files", they're reserved capacity belonging to the same database.
+   */
+  reservedShards: FsEntry[];
   totalSize: number;
   shardSize: number;
   bareLeftover?: FsEntry;
@@ -56,23 +64,37 @@ export function resolveGroup(path: string, siblings: FsEntry[]): MultipartGroup 
     byName.set(e.name, e);
   }
 
-  // Probe shard 0 by suffix — pure-mode signal
-  const zero = byName.get(`${base}.000`);
-  if (zero && zero.size > 0) {
-    const shards: FsEntry[] = [zero];
-    for (let i = 1; ; i++) {
-      const next = byName.get(`${base}.${shardSuffix(i)}`);
-      if (!next || next.size === 0) break;
-      shards.push(next);
+  // Walk every {base}.NNN sibling, regardless of size, until the suffix
+  // sequence breaks. rsqlite-wasm's multiplex VFS pre-allocates 16 shards
+  // by default — most start at 0 bytes and fill as the DB grows.
+  const allByIndex: FsEntry[] = [];
+  for (let i = 0; ; i++) {
+    const e = byName.get(`${base}.${shardSuffix(i)}`);
+    if (!e) break;
+    allByIndex.push(e);
+  }
+  // Active = up to and including the last data-bearing shard. Reserved = the
+  // zero-byte tail. If shard 0 has data (or any shard has data) it's pure mode.
+  const lastDataIdx = (() => {
+    for (let i = allByIndex.length - 1; i >= 0; i--) {
+      if (allByIndex[i].size > 0) return i;
     }
+    return -1;
+  })();
+
+  // Probe shard 0 by suffix — pure-mode signal (any .NNN exists)
+  if (allByIndex.length > 0 && lastDataIdx >= 0) {
+    const shards = allByIndex.slice(0, lastDataIdx + 1);
+    const reservedShards = allByIndex.slice(lastDataIdx + 1);
     const bareLeftover = byName.get(base);
     return {
       base,
       dir,
       mode: 'pure',
       shards,
+      reservedShards,
       totalSize: shards.reduce((a, e) => a + e.size, 0),
-      shardSize: zero.size,
+      shardSize: shards[0].size,
       ...(bareLeftover ? { bareLeftover } : {}),
       id: dir === '/' ? `/${base}` : `${dir}/${base}`,
     };
@@ -92,6 +114,7 @@ export function resolveGroup(path: string, siblings: FsEntry[]): MultipartGroup 
       base,
       dir,
       mode: 'legacy',
+      reservedShards: [],
       shards,
       totalSize: shards.reduce((a, e) => a + e.size, 0),
       shardSize: bare.size,
@@ -107,6 +130,7 @@ export function resolveGroup(path: string, siblings: FsEntry[]): MultipartGroup 
       dir,
       mode: 'single',
       shards: [self],
+      reservedShards: [],
       totalSize: self.size,
       shardSize: self.size,
       id: self.path,
@@ -118,6 +142,7 @@ export function resolveGroup(path: string, siblings: FsEntry[]): MultipartGroup 
     dir,
     mode: 'single',
     shards: [],
+    reservedShards: [],
     totalSize: 0,
     shardSize: 0,
     id: path,
@@ -147,9 +172,11 @@ export function detectGroupsInDir(dir: string, siblings: FsEntry[]): Map<string,
       dir === '/' ? `/${base}.000` : `${dir}/${base}.000`,
       siblings,
     );
-    if (group.mode === 'single' && group.shards.length <= 1) continue;
+    if (group.mode === 'single' && group.shards.length <= 1 && group.reservedShards.length === 0)
+      continue;
     out.set(base, group);
     for (const s of group.shards) seen.add(s.path);
+    for (const s of group.reservedShards) seen.add(s.path);
     if (group.bareLeftover) seen.add(group.bareLeftover.path);
   }
   return out;
