@@ -256,7 +256,10 @@ function findGroupContaining(
   path: string,
 ): MultipartGroup | null {
   for (const g of groups.values()) {
+    // Synthetic group-id click from the FileTree's collapsed group node
+    if (g.id === path) return g;
     if (g.shards.some((s) => s.path === path)) return g;
+    if (g.reservedShards.some((s) => s.path === path)) return g;
     if (g.bareLeftover?.path === path) return g;
   }
   return null;

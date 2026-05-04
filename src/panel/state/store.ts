@@ -52,6 +52,9 @@ interface State {
   expandDir(path: string): Promise<void>;
   collapseDir(path: string): void;
   toggleDir(path: string): Promise<void>;
+  /** Pure expansion bookkeeping for keys that don't correspond to OPFS dirs
+   *  (e.g., synthetic multipart-group ids). No I/O. */
+  toggleNonDirExpand(key: string): void;
   selectPath(path: string | null): void;
 
   openFile(path: string): void;
@@ -131,6 +134,13 @@ export const useStore = create<State>((set, get) => ({
   async toggleDir(path) {
     if (get().expanded.has(path)) get().collapseDir(path);
     else await get().expandDir(path);
+  },
+
+  toggleNonDirExpand(key) {
+    const expanded = new Set(get().expanded);
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    set({ expanded });
   },
 
   selectPath(path) {
