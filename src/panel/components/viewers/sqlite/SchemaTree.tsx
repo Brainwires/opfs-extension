@@ -44,36 +44,60 @@ export interface SchemaSnapshot {
   pragmas: Record<string, string | number>;
 }
 
+function quote(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Enumerate schema using only the PRAGMA surface that rsqlite-wasm supports
+ * (no `sqlite_master` / `sqlite_schema` query). Falls back to a sqlite_schema
+ * query for triggers when the engine appears to support it (sql.js etc.) and
+ * silently skips when it doesn't.
+ */
 export function readSchema(db: Database): SchemaSnapshot {
-  const tablesAndViews = db.query<Row>(
-    "SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name",
-  );
-  const tables: TableSchema[] = tablesAndViews.map((row) => {
+  // 1. Tables (and views, when the engine reports them)
+  // PRAGMA table_list → columns: schema, name, type
+  const tableListRows = db.query<Row>('PRAGMA table_list');
+  const userTables = tableListRows.filter((r) => {
+    const name = String(r.name ?? '');
+    const schema = String(r.schema ?? 'main');
+    if (!name) return false;
+    if (name.startsWith('sqlite_')) return false; // internal
+    if (schema === 'temp') return false;
+    return true;
+  });
+
+  const tables: TableSchema[] = userTables.map((row) => {
     const name = String(row.name);
-    const type = row.type === 'view' ? 'view' : 'table';
-    const cols = db.query<Row>(`PRAGMA table_info("${name.replace(/"/g, '""')}")`);
-    const columns: ColumnInfo[] = cols.map((c) => ({
-      cid: Number(c.cid),
-      name: String(c.name),
-      type: String(c.type ?? ''),
-      notNull: Boolean(Number(c.notnull)),
-      pk: Number(c.pk),
-      defaultValue: c.dflt_value === null ? null : String(c.dflt_value),
-    }));
+    const type = (String(row.type ?? 'table') === 'view' ? 'view' : 'table') as 'view' | 'table';
+    let columns: ColumnInfo[] = [];
+    try {
+      const cols = db.query<Row>(`PRAGMA table_info(${quote(name)})`);
+      columns = cols.map((c) => ({
+        cid: Number(c.cid),
+        name: String(c.name),
+        type: String(c.type ?? ''),
+        notNull: Boolean(Number(c.notnull)),
+        pk: Number(c.pk),
+        defaultValue: c.dflt_value === null ? null : String(c.dflt_value),
+      }));
+    } catch {
+      // table_info on a virtual or shadow table may fail — surface an empty column set
+    }
     let fks: FkInfo[] = [];
     try {
-      const fkRows = db.query<Row>(`PRAGMA foreign_key_list("${name.replace(/"/g, '""')}")`);
+      const fkRows = db.query<Row>(`PRAGMA foreign_key_list(${quote(name)})`);
       fks = fkRows.map((f) => ({
         fromColumn: String(f.from),
         toTable: String(f.table),
         toColumn: String(f.to),
       }));
     } catch {
-      // PRAGMA foreign_key_list may not be supported on views
+      // PRAGMA foreign_key_list may not be supported on views/virtual tables
     }
     let rowCount = 0;
     try {
-      const r = db.queryOne<Row>(`SELECT COUNT(*) AS c FROM "${name.replace(/"/g, '""')}"`);
+      const r = db.queryOne<Row>(`SELECT COUNT(*) AS c FROM ${quote(name)}`);
       rowCount = Number(r?.c ?? 0);
     } catch {
       // some views fail to count
@@ -81,18 +105,51 @@ export function readSchema(db: Database): SchemaSnapshot {
     return { name, type, columns, fks, rowCount };
   });
 
-  const indexes = db
-    .query<Row>(
-      "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY tbl_name, name",
-    )
-    .map((r) => ({ name: String(r.name), tableName: String(r.tbl_name), sql: String(r.sql ?? '') }));
+  // 2. Indexes — collected per-table via PRAGMA index_list. There's no
+  //    cross-table enumeration in rsqlite-wasm without sqlite_schema.
+  const indexes: SchemaSnapshot['indexes'] = [];
+  for (const t of tables) {
+    try {
+      const ixRows = db.query<Row>(`PRAGMA index_list(${quote(t.name)})`);
+      for (const ix of ixRows) {
+        const ixName = String(ix.name);
+        if (ixName.startsWith('sqlite_autoindex_')) continue; // implicit PK index
+        // No SQL text available from PRAGMA index_list; show a synthetic summary instead
+        let sql = '';
+        try {
+          const cols = db.query<Row>(`PRAGMA index_info(${quote(ixName)})`);
+          sql = `CREATE${ix.unique ? ' UNIQUE' : ''} INDEX ${ixName} ON ${t.name}(${cols
+            .map((c) => String(c.name))
+            .join(', ')})`;
+        } catch {
+          // ignore
+        }
+        indexes.push({ name: ixName, tableName: t.name, sql });
+      }
+    } catch {
+      // table doesn't support index_list (virtual/shadow); skip
+    }
+  }
 
-  const triggers = db
-    .query<Row>(
-      "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name",
-    )
-    .map((r) => ({ name: String(r.name), tableName: String(r.tbl_name), sql: String(r.sql ?? '') }));
+  // 3. Triggers — best-effort sqlite_schema query for engines that support it
+  //    (standard SQLite via sql.js, etc.). rsqlite-wasm doesn't, so it returns []
+  //    silently.
+  let triggers: SchemaSnapshot['triggers'] = [];
+  try {
+    triggers = db
+      .query<Row>(
+        "SELECT name, tbl_name, sql FROM sqlite_schema WHERE type='trigger' ORDER BY name",
+      )
+      .map((r) => ({
+        name: String(r.name),
+        tableName: String(r.tbl_name ?? ''),
+        sql: String(r.sql ?? ''),
+      }));
+  } catch {
+    triggers = [];
+  }
 
+  // 4. Pragmas
   const pragmas: Record<string, string | number> = {};
   for (const key of [
     'page_size',
@@ -103,6 +160,7 @@ export function readSchema(db: Database): SchemaSnapshot {
     'auto_vacuum',
     'foreign_keys',
     'cache_size',
+    'encoding',
   ]) {
     try {
       const r = db.queryOne<Row>(`PRAGMA ${key}`);
@@ -137,18 +195,29 @@ export function SchemaTree({ db, onOpenTable, onInsertSnippet, selectedTable, re
   });
   const [openTables, setOpenTables] = useState<Set<string>>(new Set());
 
+  const [readError, setReadError] = useState<string | null>(null);
   useEffect(() => {
     try {
+      setReadError(null);
       setSchema(readSchema(db));
     } catch (e) {
-      // surface via empty schema
+      const msg = e instanceof Error ? e.message : String(e);
       console.error('readSchema failed', e);
+      setReadError(msg);
       setSchema({ tables: [], indexes: [], triggers: [], pragmas: {} });
     }
   }, [db, refreshKey]);
 
   if (!schema) {
     return <div className="p-3 text-xs text-muted-foreground">Reading schema…</div>;
+  }
+  if (readError) {
+    return (
+      <div className="p-3 text-xs">
+        <div className="text-destructive font-medium mb-1">Schema read failed</div>
+        <div className="text-muted-foreground font-mono text-[11px]">{readError}</div>
+      </div>
+    );
   }
 
   const tables = schema.tables.filter((t) => t.type === 'table');
