@@ -12,12 +12,22 @@ const PAGE_SIZE = 100;
 interface Props {
   db: Database;
   table: TableSchema;
+  /** Optional initial filter: e.g. for FK click-through, prefill `{ column, value }`
+   *  as a strict-equality WHERE condition instead of a LIKE. */
+  initialEqualityFilter?: { column: string; value: SqlValue };
   onFkClick: (toTable: string, toColumn: string, value: SqlValue) => void;
   onRowEdited: () => void;
   refreshKey: number;
 }
 
-export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Props) {
+export function DataGrid({
+  db,
+  table,
+  initialEqualityFilter,
+  onFkClick,
+  onRowEdited,
+  refreshKey,
+}: Props) {
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' } | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -33,13 +43,17 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
   const filterClause = useMemo(() => {
     const parts: string[] = [];
     const params: SqlValue[] = [];
+    if (initialEqualityFilter) {
+      parts.push(`${qident(initialEqualityFilter.column)} = ?`);
+      params.push(initialEqualityFilter.value);
+    }
     for (const [col, val] of Object.entries(filters)) {
       if (!val) continue;
       parts.push(`${qident(col)} LIKE ?`);
       params.push(`%${val}%`);
     }
     return parts.length ? { sql: 'WHERE ' + parts.join(' AND '), params } : { sql: '', params: [] };
-  }, [filters]);
+  }, [filters, initialEqualityFilter]);
 
   const orderClause = sort ? ` ORDER BY ${qident(sort.col)} ${sort.dir.toUpperCase()}` : '';
 
@@ -68,17 +82,30 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
   }, [db, table.name, filterClause, orderClause, page, refreshKey]);
 
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
-  const pkCol = table.columns.find((c) => c.pk > 0)?.name ?? null;
-  // Fall back to deriving display columns from actual returned rows when the
-  // schema metadata is missing/incomplete (rsqlite-wasm's PRAGMA table_info is
-  // populated by parsing the CREATE TABLE statement; if a particular table was
-  // produced by a flow we can't introspect, we still want to render its data).
-  const displayColumns: { name: string; type: string }[] =
-    table.columns.length > 0
-      ? table.columns.map((c) => ({ name: c.name, type: c.type }))
-      : rows.length > 0
-        ? Object.keys(rows[0]).map((name) => ({ name, type: '' }))
-        : [];
+  // PK detection: walk schema columns by descending pk priority. Composite
+  // PKs (multi-column) get the FIRST one as the inline-edit anchor — good
+  // enough; tables without any PK fall back to no inline editing.
+  const pkCol =
+    table.columns
+      .filter((c) => c.pk > 0)
+      .sort((a, b) => a.pk - b.pk)[0]?.name ?? null;
+  // Display columns: ALWAYS derive from the actual returned row's keys when
+  // rows exist, so cell lookups never mismatch schema-vs-result column names
+  // (case differences, alias-stripped expressions, qualified vs bare, etc.).
+  // Augment with type info from the schema where available. Only fall back
+  // to schema columns when there are no rows yet (header-only render).
+  const displayColumns = useMemo<{ name: string; type: string }[]>(() => {
+    if (rows.length > 0) {
+      const schemaByName = new Map(
+        table.columns.map((c) => [c.name.toLowerCase(), c]),
+      );
+      return Object.keys(rows[0]).map((name) => {
+        const sc = schemaByName.get(name.toLowerCase());
+        return { name, type: sc?.type ?? '' };
+      });
+    }
+    return table.columns.map((c) => ({ name: c.name, type: c.type }));
+  }, [rows, table.columns]);
 
   return (
     <div className="flex flex-col h-full min-h-0">

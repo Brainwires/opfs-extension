@@ -460,15 +460,6 @@ function TableTabContent({
   const table = schema.tables.find((t) => t.name === tableName);
   if (!table) return <div className="p-3 text-xs text-destructive">Table not found</div>;
 
-  // Apply filter as initial WHERE — DataGrid manages its own state, so we re-mount on filter change
-  const tableForGrid = useMemo(() => {
-    if (!filter) return table;
-    return {
-      ...table,
-      // The DataGrid uses filters{} for LIKE; for an exact value we just preload that filter
-    };
-  }, [table, filter]);
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-2 px-3 py-1 border-b border-border bg-muted/10 text-[11px]">
@@ -493,10 +484,11 @@ function TableTabContent({
       <div className="flex-1 min-h-0">
         <DataGrid
           db={db}
-          table={tableForGrid}
+          table={table}
+          {...(filter ? { initialEqualityFilter: filter } : {})}
           onFkClick={onFkClick}
           onRowEdited={onRowEdited}
-          refreshKey={refreshKey + (filter ? 1 : 0)}
+          refreshKey={refreshKey}
         />
       </div>
     </div>
