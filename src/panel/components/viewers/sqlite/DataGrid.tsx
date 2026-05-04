@@ -39,6 +39,16 @@ export function DataGrid({
 
   // Reset page when table or filters/sort change
   useEffect(() => setPage(0), [table.name, filters, sort]);
+  // Reset filters/sort/rows when the table itself changes — if the parent
+  // reuses this DataGrid instance across different tables, stale state from
+  // the previous table must not bleed into the new query.
+  useEffect(() => {
+    setFilters({});
+    setSort(null);
+    setRows([]);
+    setTotalRows(0);
+    setLastSql('');
+  }, [table.name]);
 
   const filterClause = useMemo(() => {
     const parts: string[] = [];
@@ -202,6 +212,14 @@ export function DataGrid({
             title={`Last query: ${lastSql}\n\nError: ${error}`}
           >
             {error}
+          </span>
+        )}
+        {lastSql && !error && (
+          <span
+            className="text-[10px] text-muted-foreground/50 font-mono truncate max-w-xs"
+            title={lastSql}
+          >
+            {lastSql}
           </span>
         )}
         <div className="flex-1" />

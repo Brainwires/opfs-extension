@@ -347,6 +347,12 @@ export function SqliteViewer({ group }: Props) {
                     )}
                     {activeTab?.kind === 'table' && schema && activeTab.table && (
                       <TableTabContent
+                        // Force a fresh mount on every tab switch so per-tab
+                        // useState (rows, filters, sort, page) doesn't leak
+                        // between tables. The previous behaviour reused the
+                        // component instance and the stale rows array bled
+                        // into the next table's render.
+                        key={activeTab.id}
                         db={db}
                         tableName={activeTab.table}
                         schema={schema}
