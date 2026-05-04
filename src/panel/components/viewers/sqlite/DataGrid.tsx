@@ -24,6 +24,7 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<Row[]>([]);
   const [totalRows, setTotalRows] = useState(0);
+  const [lastSql, setLastSql] = useState<string>('');
 
   // Reset page when table or filters/sort change
   useEffect(() => setPage(0), [table.name, filters, sort]);
@@ -48,16 +49,16 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
     setError(null);
     try {
       const tname = table.name.replace(/"/g, '""');
-      const cnt = db.queryOne<Row>(
-        `SELECT COUNT(*) AS c FROM "${tname}" ${filterClause.sql}`,
-        filterClause.params as SqlValue[],
-      );
-      setTotalRows(Number(cnt?.c ?? 0));
       const offset = page * PAGE_SIZE;
-      const r = db.query<Row>(
-        `SELECT * FROM "${tname}" ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`,
-        filterClause.params as SqlValue[],
-      );
+      // Don't trust COUNT(*) AS c — alias preservation has been a portability gotcha.
+      // Read the value out of the first column regardless of its key name.
+      const countSql = `SELECT COUNT(*) FROM "${tname}" ${filterClause.sql}`;
+      const cnt = db.queryOne<Row>(countSql, filterClause.params as SqlValue[]);
+      const cntFirst = cnt ? Object.values(cnt)[0] : 0;
+      setTotalRows(Number(cntFirst ?? 0));
+      const selectSql = `SELECT * FROM "${tname}" ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
+      setLastSql(selectSql);
+      const r = db.query<Row>(selectSql, filterClause.params as SqlValue[]);
       setRows(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -69,6 +70,16 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
 
   const totalPages = Math.max(1, Math.ceil(totalRows / PAGE_SIZE));
   const pkCol = table.columns.find((c) => c.pk > 0)?.name ?? null;
+  // Fall back to deriving display columns from actual returned rows when the
+  // schema metadata is missing/incomplete (rsqlite-wasm's PRAGMA table_info is
+  // populated by parsing the CREATE TABLE statement; if a particular table was
+  // produced by a flow we can't introspect, we still want to render its data).
+  const displayColumns: { name: string; type: string }[] =
+    table.columns.length > 0
+      ? table.columns.map((c) => ({ name: c.name, type: c.type }))
+      : rows.length > 0
+        ? Object.keys(rows[0]).map((name) => ({ name, type: '' }))
+        : [];
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -76,7 +87,7 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
         <table className="w-full text-xs font-mono border-collapse">
           <thead className="sticky top-0 bg-muted/60 backdrop-blur z-10">
             <tr>
-              {table.columns.map((c) => (
+              {displayColumns.map((c) => (
                 <th
                   key={c.name}
                   className="text-left px-2 py-1 font-medium border-b border-border whitespace-nowrap"
@@ -97,13 +108,17 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
                       ) : (
                         <ArrowDown className="h-3 w-3" />
                       ))}
-                    <span className="text-muted-foreground/50 text-[10px] font-normal">{c.type}</span>
+                    {c.type && (
+                      <span className="text-muted-foreground/50 text-[10px] font-normal">
+                        {c.type}
+                      </span>
+                    )}
                   </button>
                 </th>
               ))}
             </tr>
             <tr>
-              {table.columns.map((c) => (
+              {displayColumns.map((c) => (
                 <th key={c.name + '-f'} className="px-1 pb-1 border-b border-border">
                   <input
                     placeholder="filter…"
@@ -121,6 +136,7 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
                 key={(pkCol ? String(row[pkCol]) : String(i)) + '-' + page}
                 row={row}
                 table={table}
+                displayColumns={displayColumns}
                 pkCol={pkCol}
                 db={db}
                 onFkClick={onFkClick}
@@ -130,7 +146,7 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
             {!loading && rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={table.columns.length}
+                  colSpan={Math.max(1, displayColumns.length)}
                   className="text-center text-muted-foreground py-10"
                 >
                   {error ? error : 'no rows'}
@@ -144,9 +160,24 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
         {loading && <Loader2 className="h-3 w-3 animate-spin" />}
         <span className="text-muted-foreground tabular-nums">
           {totalRows === 0
-            ? '0 rows'
+            ? rows.length > 0
+              ? `${rows.length} returned (count unavailable)`
+              : '0 rows'
             : `${page * PAGE_SIZE + 1}–${Math.min((page + 1) * PAGE_SIZE, totalRows)} of ${totalRows.toLocaleString()}`}
         </span>
+        {table.columns.length === 0 && rows.length > 0 && (
+          <span className="text-amber-500 text-[10px]" title="PRAGMA table_info returned no columns; rendering inferred from row keys">
+            inferred columns
+          </span>
+        )}
+        {error && (
+          <span
+            className="text-destructive text-[11px] font-mono truncate max-w-md"
+            title={`Last query: ${lastSql}\n\nError: ${error}`}
+          >
+            {error}
+          </span>
+        )}
         <div className="flex-1" />
         <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>
           ‹ Prev
@@ -170,6 +201,7 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
 function DataRow({
   row,
   table,
+  displayColumns,
   pkCol,
   db,
   onFkClick,
@@ -177,6 +209,7 @@ function DataRow({
 }: {
   row: Row;
   table: TableSchema;
+  displayColumns: { name: string; type: string }[];
   pkCol: string | null;
   db: Database;
   onFkClick: (toTable: string, toColumn: string, value: SqlValue) => void;
@@ -223,8 +256,10 @@ function DataRow({
 
   return (
     <tr className="hover:bg-accent/30 group">
-      {table.columns.map((c) => {
+      {displayColumns.map((c) => {
         const fk = table.fks.find((f) => f.fromColumn === c.name);
+        const schemaCol = table.columns.find((sc) => sc.name === c.name);
+        const isPk = (schemaCol?.pk ?? 0) > 0;
         const value = row[c.name];
         const isEditing = editing === c.name;
         return (
@@ -232,7 +267,7 @@ function DataRow({
             key={c.name}
             className={cn(
               'px-2 py-0.5 border-b border-border/40 whitespace-nowrap align-top',
-              c.pk > 0 && 'text-amber-500',
+              isPk && 'text-amber-500',
             )}
             onDoubleClick={() => !fk && startEdit(c.name)}
           >

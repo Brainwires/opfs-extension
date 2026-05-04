@@ -97,8 +97,12 @@ export function readSchema(db: Database): SchemaSnapshot {
     }
     let rowCount = 0;
     try {
-      const r = db.queryOne<Row>(`SELECT COUNT(*) AS c FROM ${quote(name)}`);
-      rowCount = Number(r?.c ?? 0);
+      // Read the first column regardless of alias preservation — some engines
+      // return the key as the literal expression (e.g., "COUNT(*)") rather than
+      // the AS alias.
+      const r = db.queryOne<Row>(`SELECT COUNT(*) FROM ${quote(name)}`);
+      const first = r ? Object.values(r)[0] : 0;
+      rowCount = Number(first ?? 0);
     } catch {
       // some views fail to count
     }
