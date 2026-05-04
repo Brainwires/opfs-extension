@@ -90,7 +90,30 @@ export function SqliteViewer({ group }: Props) {
     }
   }, [db, reloadKey]);
 
-  // Open the first table by default once schema lands
+  // Prune-stale-tabs: when the schema changes (e.g. after a Reload from
+  // OPFS that brought back a different schema, or after CREATE/DROP TABLE
+  // in the SQL console), drop any 'table' tabs whose table no longer
+  // exists. Query/explain tabs are kept regardless. If the active tab
+  // got pruned, fall back to the first surviving tab (or null).
+  useEffect(() => {
+    if (!schema) return;
+    const liveNames = new Set(schema.tables.map((t) => t.name));
+    setTabs((prev) => {
+      const filtered = prev.filter(
+        (t) => t.kind !== 'table' || (t.table && liveNames.has(t.table)),
+      );
+      if (filtered.length === prev.length) return prev;
+      // Active tab survived pruning: keep it; otherwise fall back.
+      setActiveId((curr) => {
+        if (curr && filtered.some((t) => t.id === curr)) return curr;
+        return filtered[filtered.length - 1]?.id ?? null;
+      });
+      return filtered;
+    });
+  }, [schema]);
+
+  // Open the first table by default once schema lands (only on first load
+  // — guarded by tabs.length === 0 so we don't re-open on every reload).
   useEffect(() => {
     if (!schema || tabs.length > 0) return;
     const firstTable = schema.tables.find((t) => t.type === 'table');
@@ -239,8 +262,11 @@ export function SqliteViewer({ group }: Props) {
   const handleRefresh = useCallback(() => {
     if (dirty && !window.confirm('Discard unsaved changes and reload?')) return;
     setDirty(false);
-    setTabs([]);
-    setActiveId(null);
+    // Keep tabs + activeId across the reload so the user's table selection
+    // (and open SQL queries) survives. The bridge/db is rebuilt; DataGrid
+    // re-fetches via the db prop change. Tabs that point at tables which
+    // no longer exist after the reload are pruned in a follow-up effect
+    // (see "prune-stale-tabs" below) once the new schema is read.
     setReloadKey((k) => k + 1);
     void refreshAllOpfs();
   }, [dirty, refreshAllOpfs]);
