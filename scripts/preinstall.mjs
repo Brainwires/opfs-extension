@@ -2,11 +2,17 @@
 // preinstall hook: makes `pnpm install` self-sufficient on a fresh clone.
 //
 // 1. Initialise the rsqlite-wasm submodule if it isn't checked out yet.
-// 2. Build its wasm-pack output if dist/wasm/rsqlite_wasm_bg.wasm doesn't exist.
+// 2. (Dev only) Keep the submodule on origin/main and pull the latest commits.
+//    Skipped in CI ($CI=true) so release builds use the pinned SHA, and skipped
+//    if the submodule has uncommitted work or is on a non-main branch.
+// 3. Build its wasm-pack output if it's missing OR if step 2 pulled new commits.
 //
-// Does nothing when both already true (so repeat installs are fast). Bails with a
-// human-readable explanation if a prerequisite is missing (no git, no wasm-pack, etc.)
-// instead of letting pnpm fail with ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND further down.
+// Does nothing when everything's already current (so repeat installs are fast).
+// Bails with a human-readable explanation if a prerequisite is missing (no git,
+// no wasm-pack, etc.) instead of letting pnpm fail with ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND
+// further down.
+//
+// Opt out of the auto-pull with BRAINWIRES_NO_AUTO_PULL=1.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -47,6 +53,18 @@ function run(cmd, args, opts = {}) {
   }
 }
 
+function capture(args, cwd) {
+  const r = spawnSync(args[0], args.slice(1), {
+    cwd,
+    encoding: 'utf-8',
+    shell: process.platform === 'win32',
+  });
+  if (r.status !== 0) {
+    throw new Error(`${args.join(' ')} exited with ${r.status}: ${r.stderr || ''}`);
+  }
+  return r.stdout;
+}
+
 function isSubmoduleCheckedOut() {
   if (!existsSync(submoduleDir)) return false;
   let entries = [];
@@ -83,9 +101,59 @@ if (!isSubmoduleCheckedOut()) {
   }
 }
 
-// Step 2: build the wasm if needed
-if (!existsSync(wasmFile)) {
-  console.error(yellow('→ Building rsqlite-wasm (one-time)…'));
+// Step 2 (dev only): keep submodule on main + pull latest.
+//
+// CI builds publish artifacts and need the pinned SHA to match what's recorded in
+// the parent repo (otherwise reproducibility + provenance break). We detect CI via
+// the standard $CI env var and skip the auto-pull there.
+//
+// We also skip if the submodule has uncommitted work or is on a non-main branch —
+// the user clearly has local changes and wouldn't want them clobbered.
+let pulledNewCommits = false;
+if (!process.env.CI && !process.env.BRAINWIRES_NO_AUTO_PULL && hasCommand('git')) {
+  try {
+    const branch = capture(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], submoduleDir).trim();
+    const status = capture(['git', 'status', '--porcelain'], submoduleDir).trim();
+    if (status) {
+      console.error(
+        yellow('→ vendor/rsqlite-wasm has uncommitted changes — skipping auto-pull.'),
+      );
+    } else if (branch !== 'main' && branch !== 'HEAD') {
+      console.error(
+        yellow(`→ vendor/rsqlite-wasm is on '${branch}' (not main) — skipping auto-pull.`),
+      );
+    } else {
+      const before = capture(['git', 'rev-parse', 'HEAD'], submoduleDir).trim();
+      // Submodules default to detached HEAD after `submodule update --init`. Switch
+      // to main first so `git pull` has a tracking branch to fast-forward.
+      if (branch === 'HEAD') {
+        run('git', ['checkout', 'main'], { cwd: submoduleDir });
+      }
+      console.error(yellow('→ Pulling latest rsqlite-wasm (origin/main)…'));
+      run('git', ['pull', '--ff-only', 'origin', 'main'], { cwd: submoduleDir });
+      const after = capture(['git', 'rev-parse', 'HEAD'], submoduleDir).trim();
+      if (before !== after) {
+        pulledNewCommits = true;
+        console.error(
+          dim(`  ${before.slice(0, 7)} → ${after.slice(0, 7)} (rebuild forced)`),
+        );
+      }
+    }
+  } catch (e) {
+    // Network failures, non-FF, missing remote — don't block the install. Use
+    // whatever's already there.
+    console.error(
+      yellow('→ rsqlite-wasm pull failed (continuing with current commit): ') +
+        dim(e.message),
+    );
+  }
+}
+
+// Step 3: build the wasm if needed (or if step 2 pulled new commits)
+if (!existsSync(wasmFile) || pulledNewCommits) {
+  console.error(
+    yellow(pulledNewCommits ? '→ Rebuilding rsqlite-wasm…' : '→ Building rsqlite-wasm (one-time)…'),
+  );
   if (!hasCommand('wasm-pack')) {
     bail(
       'wasm-pack is not on PATH; cannot build rsqlite-wasm.',

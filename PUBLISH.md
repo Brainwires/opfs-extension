@@ -158,16 +158,34 @@ npm deprecate brainwires-opfs@0.1.0 "Has a CSP bug; use 0.1.1 or later"
 `npm unpublish` is heavily restricted (only within 72 hours of publish, and only if
 no other package depends on it). Deprecate, don't unpublish.
 
-## Updating the rsqlite-wasm submodule
+## How the rsqlite-wasm pin works
 
-The published bytes pin a specific rsqlite-wasm commit. To bump:
+The repo records a specific rsqlite-wasm commit as the submodule SHA. That pin is
+authoritative for **release builds** — CI checks out exactly that SHA and the
+published npm bytes always correspond to it.
+
+Local dev installs are different. The `preinstall` hook auto-pulls
+`origin/main` into the submodule and rebuilds whenever there are new commits, so
+you don't have to manually `cd vendor/rsqlite-wasm && git pull` to track the
+engine. The pinned SHA in the parent repo only changes when **you** stage and
+commit it.
+
+| Context | Auto-pull? | Why |
+|---|---|---|
+| `pnpm install` (dev machine) | **Yes** | Stay current on rsqlite-wasm with zero ceremony. |
+| `pnpm install` in CI (`$CI=true`) | No | Release builds must match the recorded SHA for reproducibility + provenance. |
+| Submodule has uncommitted changes | No | Don't clobber your local work. |
+| Submodule on a non-`main` branch | No | You're clearly testing something. |
+| `BRAINWIRES_NO_AUTO_PULL=1 pnpm install` | No | Manual override. |
+
+### Bumping the pinned SHA for a release
+
+After the auto-pull moves the submodule forward locally and you've verified the
+build is good, commit the new SHA so CI uses it:
 
 ```bash
-cd vendor/rsqlite-wasm
-git pull origin main
-cd ../..
-pnpm setup:rsqlite          # rebuilds the wasm at the new commit
 git add vendor/rsqlite-wasm
+git status   # confirms you're committing a submodule SHA bump, nothing else
 git commit -m "Bump rsqlite-wasm to <short-sha>"
-# then bump version + tag as a normal release
+# then bump version + tag as a normal release (see Cutting a release)
 ```
