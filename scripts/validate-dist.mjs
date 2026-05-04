@@ -91,6 +91,30 @@ for (const f of ['rsqlite-wasm/rsqlite_wasm.js', 'rsqlite-wasm/rsqlite_wasm_bg.w
   else err(`${f} missing — SQLite viewer will fail to boot`);
 }
 
+// wasm-bindgen emits inline-JS shims under rsqlite-wasm/snippets/ and the glue
+// fetches them at runtime via relative URLs. They must be copied recursively.
+const snippetsDir = path.join(DIST, 'rsqlite-wasm', 'snippets');
+if (!existsSync(snippetsDir)) {
+  err(
+    'rsqlite-wasm/snippets/ missing — wasm-bindgen inline-JS shims will 404 at runtime',
+  );
+} else {
+  const { readdirSync } = await import('node:fs');
+  let snippetCount = 0;
+  function walk(dir) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(dir, e.name));
+      else snippetCount++;
+    }
+  }
+  walk(snippetsDir);
+  if (snippetCount === 0) {
+    err('rsqlite-wasm/snippets/ exists but is empty — copy plugin is broken');
+  } else {
+    ok(`rsqlite-wasm/snippets/ has ${snippetCount} shim file${snippetCount === 1 ? '' : 's'}`);
+  }
+}
+
 // Check that index.html and panel.html reference assets that exist
 async function checkHtmlReferences(htmlFile) {
   const html = await readFile(path.join(DIST, htmlFile), 'utf-8');

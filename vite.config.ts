@@ -10,22 +10,28 @@ const require = createRequire(import.meta.url);
 const rsqliteEntry = require.resolve('rsqlite-wasm');
 const rsqliteWasmDir = path.join(path.dirname(rsqliteEntry), 'wasm');
 
-/** Copy rsqlite-wasm's wasm-pack output (JS glue + .wasm) into dist/rsqlite-wasm/.
- *  vite-plugin-static-copy mangles paths when fed absolute symlinked sources, so
- *  we copy directly. Runs in both build (writeBundle) and serve (configureServer
- *  via middleware that serves the file from the package). */
+/** Copy rsqlite-wasm's wasm-pack output (JS glue + .wasm + snippets/) into
+ *  dist/rsqlite-wasm/. vite-plugin-static-copy mangles paths when fed absolute
+ *  symlinked sources, so we copy directly. The wasm-pack output includes a
+ *  snippets/ subdirectory containing wasm-bindgen inline-JS shims that the glue
+ *  fetches at runtime — those must come along, recursively. */
 function copyRsqliteWasm(): Plugin {
+  function copyRec(src: string, dest: string) {
+    mkdirSync(dest, { recursive: true });
+    for (const dirent of readdirSync(src, { withFileTypes: true })) {
+      const s = path.join(src, dirent.name);
+      const d = path.join(dest, dirent.name);
+      if (dirent.isDirectory()) copyRec(s, d);
+      else if (dirent.isFile()) copyFileSync(s, d);
+    }
+  }
   return {
     name: 'copy-rsqlite-wasm',
     apply: 'build',
     writeBundle(options) {
       const outDir = options.dir ?? 'dist';
       const target = path.join(outDir, 'rsqlite-wasm');
-      mkdirSync(target, { recursive: true });
-      for (const dirent of readdirSync(rsqliteWasmDir, { withFileTypes: true })) {
-        if (!dirent.isFile()) continue;
-        copyFileSync(path.join(rsqliteWasmDir, dirent.name), path.join(target, dirent.name));
-      }
+      copyRec(rsqliteWasmDir, target);
     },
   };
 }
