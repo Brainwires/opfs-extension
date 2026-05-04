@@ -28,7 +28,18 @@ DevTools panel.
 - **Drag-out to download**, drag-in to upload, full IDE-style keyboard support
 - Per-origin **quota bar** + status footer
 
-## Build & install (unpacked)
+## Install (no Web Store, no clone)
+
+```bash
+npx brainwires-opfs            # extract + print Load unpacked instructions
+npx brainwires-opfs --launch   # also opens chrome://extensions automatically
+```
+
+The npm package ships the prebuilt extension. No git clone, no Rust toolchain, no build
+required on the consumer machine. See [`cli/README.md`](cli/README.md) for the full CLI
+docs (custom paths, JSON output, uninstall, browser auto-detection).
+
+## Build from source
 
 The SQLite client is powered by [rsqlite-wasm](https://github.com/Brainwires/rsqlite-wasm),
 vendored as a git submodule under `vendor/rsqlite-wasm/`.
@@ -37,16 +48,17 @@ vendored as a git submodule under `vendor/rsqlite-wasm/`.
 on PATH.
 
 ```bash
-git clone --recurse-submodules https://github.com/Brainwires/opfs-extension.git
+git clone https://github.com/Brainwires/opfs-extension.git
 cd opfs-extension
-pnpm setup    # initialises submodule (if not already) and builds rsqlite-wasm
-pnpm install  # then the normal install (preinstall checks the submodule is built)
+pnpm install   # preinstall hook auto-clones the submodule and builds rsqlite-wasm
 pnpm build
 ```
 
-If you already cloned without `--recurse-submodules`, `pnpm setup` will initialise the
-submodule for you. The `preinstall` hook fails fast with a clear fix-it command if the
-rsqlite-wasm artifacts aren't built, so you won't see a confusing pnpm error.
+The `preinstall` hook handles `git submodule update --init --recursive` and the wasm
+build automatically — running just `pnpm install` is enough. You don't have to remember
+`--recurse-submodules` or any setup step. If a prerequisite is missing (no Rust, no
+wasm-pack) it bails with a clear fix-it message instead of pnpm's confusing
+`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`.
 
 Then in Chrome:
 

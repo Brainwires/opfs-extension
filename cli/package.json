@@ -1,0 +1,29 @@
+{
+  "name": "brainwires-opfs",
+  "version": "0.1.0",
+  "description": "One-command installer for the Brainwires OPFS Chrome DevTools extension. Skips the Web Store — extracts the prebuilt extension and walks you through `Load unpacked`.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "brainwires-opfs": "./bin.mjs"
+  },
+  "files": ["bin.mjs", "dist/", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "homepage": "https://github.com/Brainwires/opfs-extension",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Brainwires/opfs-extension.git",
+    "directory": "cli"
+  },
+  "keywords": [
+    "chrome-extension",
+    "devtools",
+    "opfs",
+    "origin-private-file-system",
+    "sqlite",
+    "rsqlite-wasm",
+    "installer"
+  ]
+}

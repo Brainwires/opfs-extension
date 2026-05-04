@@ -29,8 +29,9 @@ verified. The list below is **only** what those automated tests genuinely can't 
 
 ### A. Installation
 
-- [ ] **A.0** First-time clone: `git clone --recurse-submodules <repo>` then `pnpm setup` (initialises `vendor/rsqlite-wasm` and builds the wasm). Already cloned? `pnpm setup` works either way. Requires Rust + wasm-pack on PATH.
-- [ ] **A.1** `pnpm install && pnpm build && open chrome://extensions` → Developer mode on → **Load unpacked** → pick `dist/`. Card shows "Brainwires OPFS" with the gradient folder icon.
+- [ ] **A.0a** **End-user install path:** on a clean machine, `npx brainwires-opfs --launch` extracts the extension, opens `chrome://extensions`, and prints the Load unpacked path. Verify by following its instructions and seeing the extension load.
+- [ ] **A.0b** **Build-from-source path:** clean clone (no `--recurse-submodules`), then `pnpm install` — the preinstall hook should auto-init the submodule and build the wasm without further commands. Then `pnpm build`.
+- [ ] **A.1** Open `chrome://extensions` → Developer mode on → **Load unpacked** → pick the path printed by `npx brainwires-opfs` (or your local `dist/`). Card shows "Brainwires OPFS" with the gradient folder icon.
 - [ ] **A.2** Open DevTools on any normal http(s) page. The **OPFS** tab appears alongside Elements/Console.
 
 ### B. The "OPFS" panel renders

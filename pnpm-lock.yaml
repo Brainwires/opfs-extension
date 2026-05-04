@@ -108,8 +108,8 @@ importers:
         specifier: ^2.1.6
         version: 2.1.9(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
       rsqlite-wasm:
-        specifier: file:./vendor/rsqlite-wasm/js
-        version: file:vendor/rsqlite-wasm/js
+        specifier: link:./vendor/rsqlite-wasm/js
+        version: link:vendor/rsqlite-wasm/js
       sonner:
         specifier: ^1.7.0
         version: 1.7.4(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -1986,10 +1986,6 @@ packages:
     resolution: {integrity: sha512-J9qZyW++QK/09NyN/zeO0dG/1GdGfyp9lV8ajHnRVLfo/uFsbji5mHnDgn/qYdUHyCkM2N+8VyspgZclfAh0eQ==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
-
-  rsqlite-wasm@file:vendor/rsqlite-wasm/js:
-    resolution: {directory: vendor/rsqlite-wasm/js, type: directory}
-    engines: {node: '>=18'}
 
   run-parallel@1.2.0:
     resolution: {integrity: sha512-5l4VyZR86LZ/lDxZTR6jqL8AFE2S0IFLMP26AbjsLVADxHdhB/c0GUsH+y39UfCi3dzz8OlQuPmnaJOMoDHQBA==}
@@ -4073,8 +4069,6 @@ snapshots:
       '@rollup/rollup-win32-x64-gnu': 4.60.2
       '@rollup/rollup-win32-x64-msvc': 4.60.2
       fsevents: 2.3.3
-
-  rsqlite-wasm@file:vendor/rsqlite-wasm/js: {}
 
   run-parallel@1.2.0:
     dependencies:
