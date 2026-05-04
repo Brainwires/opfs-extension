@@ -107,17 +107,46 @@ if (!isSubmoduleCheckedOut()) {
 // the parent repo (otherwise reproducibility + provenance break). We detect CI via
 // the standard $CI env var and skip the auto-pull there.
 //
-// We also skip if the submodule has uncommitted work or is on a non-main branch —
+// We also skip if the submodule has REAL uncommitted work (modifications to
+// tracked files OTHER than the build-touched ones) or is on a non-main branch —
 // the user clearly has local changes and wouldn't want them clobbered.
+//
+// Files our own build is known to dirty (auto-restored before the dirty-check):
+//   • js/package-lock.json — `npm install` rewrites it across npm versions.
+//                            Now we use `npm ci`, but old runs may have left it dirty.
+const BUILD_DIRTIES = ['js/package-lock.json'];
 let pulledNewCommits = false;
 if (!process.env.CI && !process.env.BRAINWIRES_NO_AUTO_PULL && hasCommand('git')) {
   try {
     const branch = capture(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], submoduleDir).trim();
-    const status = capture(['git', 'status', '--porcelain'], submoduleDir).trim();
+    // Auto-restore files we know were dirtied by our own previous build runs.
+    // `git restore --source=HEAD --` is a safe no-op if the file isn't actually dirty.
+    for (const f of BUILD_DIRTIES) {
+      const fileStatus = capture(['git', 'status', '--porcelain', '--', f], submoduleDir).trim();
+      if (fileStatus) {
+        console.error(
+          yellow(`→ Restoring ${f} (was rewritten by a previous build)…`),
+        );
+        try {
+          run('git', ['restore', '--source=HEAD', '--', f], { cwd: submoduleDir });
+        } catch {
+          // older git: fall back to checkout
+          run('git', ['checkout', 'HEAD', '--', f], { cwd: submoduleDir });
+        }
+      }
+    }
+    // Now check for real dirt — modifications to tracked files we DIDN'T just
+    // restore. Untracked files (e.g., js/README.md / js/LICENSE created by
+    // build:meta) are intentionally ignored.
+    const status = capture(
+      ['git', 'status', '--porcelain', '--untracked-files=no'],
+      submoduleDir,
+    ).trim();
     if (status) {
       console.error(
         yellow('→ vendor/rsqlite-wasm has uncommitted changes — skipping auto-pull.'),
       );
+      console.error(dim(status.split('\n').map((l) => '  ' + l).join('\n')));
     } else if (branch !== 'main' && branch !== 'HEAD') {
       console.error(
         yellow(`→ vendor/rsqlite-wasm is on '${branch}' (not main) — skipping auto-pull.`),
@@ -177,12 +206,23 @@ if (!existsSync(wasmFile) || pulledNewCommits) {
     );
   }
   try {
-    run('npm', ['install', '--no-audit', '--no-fund'], { cwd: submoduleJs });
+    // `npm ci` reproduces the exact lockfile contents (no rewrite) — avoids the
+    // perpetual "modified js/package-lock.json" dirty state. Falls back to
+    // `npm install` only if the lockfile is missing or out of sync.
+    const ciResult = spawnSync('npm', ['ci', '--no-audit', '--no-fund'], {
+      stdio: 'inherit',
+      cwd: submoduleJs,
+      shell: process.platform === 'win32',
+    });
+    if (ciResult.status !== 0) {
+      console.error(yellow('→ npm ci failed; falling back to npm install…'));
+      run('npm', ['install', '--no-audit', '--no-fund'], { cwd: submoduleJs });
+    }
     run('npm', ['run', 'build'], { cwd: submoduleJs });
   } catch (e) {
     bail(
       `rsqlite-wasm build failed: ${e.message}`,
-      'Try running it manually for full output:\n  cd vendor/rsqlite-wasm/js && npm install && npm run build',
+      'Try running it manually for full output:\n  cd vendor/rsqlite-wasm/js && npm ci && npm run build',
     );
   }
 }

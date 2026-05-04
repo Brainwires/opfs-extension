@@ -17,7 +17,7 @@
     "test:unit": "vitest run",
     "test:bridge": "playwright test",
     "validate:dist": "node scripts/validate-dist.mjs",
-    "setup:rsqlite": "cd vendor/rsqlite-wasm/js && npm install --no-audit --no-fund && npm run build",
+    "setup:rsqlite": "cd vendor/rsqlite-wasm/js && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund) && npm run build",
     "preinstall": "node scripts/preinstall.mjs"
   },
   "dependencies": {
