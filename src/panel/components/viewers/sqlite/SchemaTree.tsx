@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { Database, Row } from 'rsqlite-wasm';
 import { cn } from '../../../lib/utils';
+import { qident as quote } from '../../../lib/sqlIdent';
 
 interface ColumnInfo {
   cid: number;
@@ -44,9 +45,6 @@ export interface SchemaSnapshot {
   pragmas: Record<string, string | number>;
 }
 
-function quote(name: string): string {
-  return `"${name.replace(/"/g, '""')}"`;
-}
 
 /**
  * Enumerate schema using only the PRAGMA surface that rsqlite-wasm supports

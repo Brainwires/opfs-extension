@@ -4,6 +4,7 @@ import type { Database, Row, SqlValue } from 'rsqlite-wasm';
 import { Button } from '../../ui/button';
 import { renderCell } from './cellRenderers';
 import { cn } from '../../../lib/utils';
+import { qident } from '../../../lib/sqlIdent';
 import type { TableSchema } from './SchemaTree';
 
 const PAGE_SIZE = 100;
@@ -34,29 +35,27 @@ export function DataGrid({ db, table, onFkClick, onRowEdited, refreshKey }: Prop
     const params: SqlValue[] = [];
     for (const [col, val] of Object.entries(filters)) {
       if (!val) continue;
-      parts.push(`"${col.replace(/"/g, '""')}" LIKE ?`);
+      parts.push(`${qident(col)} LIKE ?`);
       params.push(`%${val}%`);
     }
     return parts.length ? { sql: 'WHERE ' + parts.join(' AND '), params } : { sql: '', params: [] };
   }, [filters]);
 
-  const orderClause = sort
-    ? ` ORDER BY "${sort.col.replace(/"/g, '""')}" ${sort.dir.toUpperCase()}`
-    : '';
+  const orderClause = sort ? ` ORDER BY ${qident(sort.col)} ${sort.dir.toUpperCase()}` : '';
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     try {
-      const tname = table.name.replace(/"/g, '""');
+      const tname = qident(table.name);
       const offset = page * PAGE_SIZE;
       // Don't trust COUNT(*) AS c — alias preservation has been a portability gotcha.
       // Read the value out of the first column regardless of its key name.
-      const countSql = `SELECT COUNT(*) FROM "${tname}" ${filterClause.sql}`;
+      const countSql = `SELECT COUNT(*) FROM ${tname} ${filterClause.sql}`;
       const cnt = db.queryOne<Row>(countSql, filterClause.params as SqlValue[]);
       const cntFirst = cnt ? Object.values(cnt)[0] : 0;
       setTotalRows(Number(cntFirst ?? 0));
-      const selectSql = `SELECT * FROM "${tname}" ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
+      const selectSql = `SELECT * FROM ${tname} ${filterClause.sql}${orderClause} LIMIT ${PAGE_SIZE} OFFSET ${offset}`;
       setLastSql(selectSql);
       const r = db.query<Row>(selectSql, filterClause.params as SqlValue[]);
       setRows(r);
@@ -237,13 +236,13 @@ function DataRow({
       return;
     }
     try {
-      const tname = table.name.replace(/"/g, '""');
-      const colName = col.replace(/"/g, '""');
-      const pkName = pkCol.replace(/"/g, '""');
+      const tname = qident(table.name);
+      const colName = qident(col);
+      const pkName = qident(pkCol);
       // Treat empty string as NULL when original was null
       const newValue = draft === '' && cur === null ? null : draft;
       db.exec(
-        `UPDATE "${tname}" SET "${colName}" = ? WHERE "${pkName}" = ?`,
+        `UPDATE ${tname} SET ${colName} = ? WHERE ${pkName} = ?`,
         [newValue as SqlValue, row[pkCol] as SqlValue],
       );
       setEditing(null);
