@@ -64,6 +64,18 @@ if (manifest) {
   }
 
   if (manifest.minimum_chrome_version) ok(`minimum_chrome_version: ${manifest.minimum_chrome_version}`);
+
+  // MV3 default CSP blocks WASM. We ship multiple wasm modules (rsqlite-wasm,
+  // pdfjs), so the CSP must include 'wasm-unsafe-eval'. Without this the
+  // SQLite viewer fails at load with a CompileError.
+  const csp = manifest.content_security_policy?.extension_pages;
+  if (!csp) {
+    err('content_security_policy.extension_pages missing — WASM modules will be blocked');
+  } else if (!csp.includes("'wasm-unsafe-eval'")) {
+    err(`extension_pages CSP missing 'wasm-unsafe-eval' — WASM modules will be blocked. Got: ${csp}`);
+  } else {
+    ok("CSP allows 'wasm-unsafe-eval' (WASM will load)");
+  }
 }
 
 // Check critical entry HTMLs exist
