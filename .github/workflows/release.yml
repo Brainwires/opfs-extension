@@ -12,6 +12,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: pnpm/action-setup@v4
         with:
@@ -21,6 +23,26 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Cache rsqlite-wasm cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            vendor/rsqlite-wasm/target
+          key: rsqlite-wasm-${{ runner.os }}-${{ hashFiles('vendor/rsqlite-wasm/Cargo.lock', 'vendor/rsqlite-wasm/**/Cargo.toml') }}
+
+      - name: Build rsqlite-wasm
+        run: pnpm setup:rsqlite
 
       - run: pnpm install --frozen-lockfile
 

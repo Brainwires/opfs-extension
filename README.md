@@ -30,10 +30,23 @@ DevTools panel.
 
 ## Build & install (unpacked)
 
+The SQLite client is powered by [rsqlite-wasm](https://github.com/Brainwires/rsqlite-wasm),
+vendored as a git submodule under `vendor/rsqlite-wasm/`.
+
+**Prerequisites:** Node 22+, pnpm 10+, [Rust + wasm-pack](https://rustwasm.github.io/wasm-pack/installer/)
+on PATH.
+
 ```bash
-pnpm install
+git clone --recurse-submodules https://github.com/Brainwires/opfs-extension.git
+cd opfs-extension
+pnpm setup    # initialises submodule (if not already) and builds rsqlite-wasm
+pnpm install  # then the normal install (preinstall checks the submodule is built)
 pnpm build
 ```
+
+If you already cloned without `--recurse-submodules`, `pnpm setup` will initialise the
+submodule for you. The `preinstall` hook fails fast with a clear fix-it command if the
+rsqlite-wasm artifacts aren't built, so you won't see a confusing pnpm error.
 
 Then in Chrome:
 

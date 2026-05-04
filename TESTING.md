@@ -29,7 +29,8 @@ verified. The list below is **only** what those automated tests genuinely can't 
 
 ### A. Installation
 
-- [ ] **A.1** `pnpm build && open chrome://extensions` → Developer mode on → **Load unpacked** → pick `dist/`. Card shows "Brainwires OPFS" with the gradient folder icon.
+- [ ] **A.0** First-time clone: `git clone --recurse-submodules <repo>` then `pnpm setup` (initialises `vendor/rsqlite-wasm` and builds the wasm). Already cloned? `pnpm setup` works either way. Requires Rust + wasm-pack on PATH.
+- [ ] **A.1** `pnpm install && pnpm build && open chrome://extensions` → Developer mode on → **Load unpacked** → pick `dist/`. Card shows "Brainwires OPFS" with the gradient folder icon.
 - [ ] **A.2** Open DevTools on any normal http(s) page. The **OPFS** tab appears alongside Elements/Console.
 
 ### B. The "OPFS" panel renders

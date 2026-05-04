@@ -1,0 +1,3 @@
+[submodule "vendor/rsqlite-wasm"]
+	path = vendor/rsqlite-wasm
+	url = https://github.com/Brainwires/rsqlite-wasm.git

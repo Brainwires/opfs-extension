@@ -14,7 +14,10 @@
     "test": "pnpm test:unit && pnpm test:bridge && pnpm validate:dist",
     "test:unit": "vitest run",
     "test:bridge": "playwright test",
-    "validate:dist": "node scripts/validate-dist.mjs"
+    "validate:dist": "node scripts/validate-dist.mjs",
+    "setup": "git submodule update --init --recursive && pnpm setup:rsqlite",
+    "setup:rsqlite": "cd vendor/rsqlite-wasm/js && npm install --no-audit --no-fund && npm run build",
+    "preinstall": "node scripts/check-submodule.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
@@ -50,7 +53,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-resizable-panels": "^2.1.6",
-    "rsqlite-wasm": "file:../rsqlite-wasm/js",
+    "rsqlite-wasm": "file:./vendor/rsqlite-wasm/js",
     "sonner": "^1.7.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss-animate": "^1.0.7",
